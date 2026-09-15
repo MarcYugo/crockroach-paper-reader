@@ -1,0 +1,129 @@
+# ============================================================
+#  paper-trans-to-html（应用容器）
+#
+#  依赖 mongo_configuration/ 里的 MongoDB：两份 compose 用同一个网络 paper-mongo-net，
+#  应用通过服务名 mongo 连库。启动顺序：
+#      cd mongo_configuration && cp -n .env.example .env && docker compose up -d   # 先起数据库
+#      cd docker              && docker compose up -d --build                     # 再起应用
+#      浏览器打开 http://127.0.0.1:8000
+#
+#  只跑应用、不要 MongoDB（数据落在 paper-data 卷里的 JSON）：
+#      APP_STORAGE=json docker compose up -d --build
+# ============================================================
+services:
+  app:
+    build:
+      context: ..                 # 构建上下文 = 项目根目录
+      dockerfile: docker/Dockerfile
+      # 不需要构建参数：torch 的 CPU 版与 surya 客户端都在 requirements.txt 里锁好了
+    image: paper-trans-to-html:latest
+    container_name: paper-app
+    restart: unless-stopped
+
+    ports:
+      # 只映射到宿主机回环，外网访问不到（要对外请自行加反代/改这里）
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+
+    env_file:
+      # 复用 mongo_configuration/.env 里的账号密码（文件不存在也不报错）
+      - path: ../mongo_configuration/.env
+        required: false
+
+    environment:
+      # ---- 监听地址（容器里必须是 0.0.0.0，否则端口映射不到）----
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+
+      # ---- 连哪个 MongoDB：容器里用服务名 mongo，不是 127.0.0.1 ----
+      MONGO_HOST: ${MONGO_HOST:-mongo}
+      MONGO_PORT: ${MONGO_PORT:-27017}
+      # 想直接给完整连接串（云端 Atlas / 已有实例）就设 MONGO_URI，优先级最高
+      MONGO_URI: ${MONGO_URI:-}
+      # 存储后端：auto=连不上库就回退本地 JSON；mongo=连不上直接启动失败；json=只用本地
+      APP_STORAGE: ${APP_STORAGE:-auto}
+
+      # ---- 账号/翻译相关（可选，都可以在网页里配）----
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-1}       # 未登录自助注册；暴露到公网建议设 0
+      MAX_ACCOUNTS: ${MAX_ACCOUNTS:-50}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}        # 安装级默认 Key（每个账号还能各自覆盖）
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-}
+
+      # ---- Surya 解析服务（PDF 版面分析 / OCR）----
+      # ⚠️ 容器里的 127.0.0.1 是容器自己，连不到宿主机上的 surya-server；
+      #    所以默认走 host.docker.internal（宿主端口 8060 已由 surya-server 映射）。
+      #    若把 surya 接进了同一个 Docker 网络，可改成 http://surya-server:8060/v1
+      SURYA_INFERENCE_URL: ${SURYA_INFERENCE_URL:-http://host.docker.internal:8060/v1}
+      SURYA_INFERENCE_BACKEND: ${SURYA_INFERENCE_BACKEND:-llamacpp}
+
+      # ---- PaddleOCR-VL 解析服务（GPU 整页 OCR，优先级最高）----
+      # 同样：容器里的 127.0.0.1 连不到宿主机上的 paddleocr-vl 服务；
+      #    默认走 host.docker.internal（宿主端口 8080 由该服务映射，见
+      #    ../paddle_ocr_doc_parse_service/docker-compose.gpu.yml 的 HOST_PORT）。
+      #    若把它接进了同一个 Docker 网络，可改成 http://paddleocr-vl-vllm:8080/v1
+      PADDLE_OCR_URL: ${PADDLE_OCR_URL:-http://host.docker.internal:8080/v1}
+      # 模型别名要和服务端 --served-model-name 对得上（默认值即 compose 里挂的那个）
+      PADDLE_OCR_MODEL: ${PADDLE_OCR_MODEL:-PaddleOCR-VL-1.6-0.9B}
+      # 服务端设了 --api-key 时才需要；没设时留空即可（vLLM 会忽略该头）
+      PADDLE_OCR_API_KEY: ${PADDLE_OCR_API_KEY:-}
+
+      # auto=按 PaddleOCR-VL > Surya > PyMuPDF 优先级自动选 /
+      # paddle|surya=从该后端开始(连不上仍往下回退) / pymupdf=只用本地
+      PDF_PARSER_BACKEND: ${PDF_PARSER_BACKEND:-auto}
+
+      TZ: Asia/Shanghai
+
+    # Linux 下 host.docker.internal 不会自动存在，需显式指向宿主机网关（Docker 20.10+）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    volumes:
+      # 运行时数据：上传临时文件、以及“回退模式(APP_STORAGE=json)”下的 JSON 数据与插图。
+      # 连上 MongoDB 时插图存库(GridFS)，这个卷基本只当临时目录用。
+      - paper-data:/app/data
+      # 想直接用项目里的 config.json（填了 deepseek_api_key / parser 段）就取消注释。
+      # ⚠️ 宿主机上这个文件必须**已经存在**，否则 Docker 会建出一个同名目录。
+      # - ../config.json:/app/config.json:ro
+      # 也可以整个 data/ 用目录挂载（方便直接看图片）：
+      #   mkdir -p ../data && sudo chown -R 1000:1000 ../data
+      # - ../data:/app/data
+
+    networks:
+      - paper-net
+
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+    # ---- 资源分配（内存）----
+    # 说明：Linux 上容器默认【不限制内存】，能用到整台机器（docker stats 里的 LIMIT 就是宿主总量）。
+    # 下面三个值默认 0 = 不限制；要显式“分多少”就在 docker/.env 里按需覆盖（见 .env.example）：
+    #   MEM_LIMIT=10g        硬上限，超过会被内核 OOM 杀（别设得比峰值需求小）
+    #   MEM_RESERVATION=2g   软保障，只影响调度预留，不限制实际使用
+    #   MEMSWAP_LIMIT=12g    上限+swap 的总配额；等于 MEM_LIMIT 表示禁用 swap，-1 表示不限
+    mem_limit: ${MEM_LIMIT:-0}
+    memswap_limit: ${MEMSWAP_LIMIT:-0}
+    mem_reservation: ${MEM_RESERVATION:-0}
+    # /dev/shm（tmpfs）默认只有 64MB：PyMuPDF 渲染整页位图、多线程库常撞这个上限，
+    # 报错却像是“容器内存不够”。按需分配、不常驻，放大到 512MB 更保险。
+    shm_size: ${SHM_SIZE:-512m}
+
+networks:
+  # 与 mongo_configuration/docker-compose.yml 同名 → 两个 compose 共用一个网络，
+  # 应用里就能用 `mongo:27017` 连库（谁先起谁创建，后起的直接加入）。
+  paper-net:
+    name: paper-mongo-net
+    driver: bridge
+
+volumes:
+  paper-data:
+    name: paper-app-data

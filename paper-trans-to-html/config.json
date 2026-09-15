@@ -1,0 +1,31 @@
+{
+  "backend": "deepseek",
+  "deepseek_api_key": "xxxx",
+  "deepseek_base_url": "https://api.deepseek.com",
+  "deepseek_model": "deepseek-v4-flash",
+  "parser": {
+    "backend": "auto",
+    "surya_url": "http://127.0.0.1:8060/v1",
+    "surya_backend": "llamacpp",
+    "paddle_url": "http://127.0.0.1:8080/v1",
+    "paddle_model": "PaddleOCR-VL-1.6-0.9B",
+    "paddle_prompt": "OCR:",
+    "paddle_max_tokens": 4096,
+    "paddle_timeout": 300,
+    "paddle_api_key": "",
+    "dpi": 192,
+    "image_labels": [
+      "Picture",
+      "Figure",
+      "Diagram",
+      "ChemicalBlock"
+    ],
+    "image_pad": 4,
+    "min_image_size": 32,
+    "keep_html": true,
+    "local_image_fallback": true,
+    "fallback": true,
+    "drop_text_in_images": true,
+    "text_in_image_overlap": 0.6
+  }
+}

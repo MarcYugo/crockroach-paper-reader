@@ -1,0 +1,653 @@
+{
+  "server_url": "http://127.0.0.1:8060/v1",
+  "backend": "llamacpp",
+  "input": "/root/doc_parse_service/test.pdf",
+  "image_dir": "/root/doc_parse_service/test_images",
+  "pages": [
+    {
+      "page": 1,
+      "image_size": [
+        1632,
+        2112
+      ],
+      "text": "arXiv:2512.23675v2 [cs.LG] 31 Dec 2025\n\nEnd-to-End Test-Time Training for Long Context\n\nArnuv Tandon*1,3, Karan Dalal*1,4, Xinhao Li*5, Daniel Koceja*3, Marcel Rød*3, Sam Buchanan4, Xiaolong Wang5, Jure Leskovec3, Sanmi Koyejo3, Tatsunori Hashimoto3, Carlos Guestrin3, Jed McCaleb1, Yejin Choi2, Yu Sun*2,3\n\n1 Astera Institute    2 NVIDIA    3 Stanford University    4 UC Berkeley    5 UC San Diego\n\nAbstract\n\nWe formulate long-context language modeling as a problem in continual learning rather than architecture design. Under this formulation, we only use a standard architecture – a Transformer with sliding-window attention. However, our model continues learning at test time via next-token prediction on the given context, compressing the context it reads into its weights. In addition, we improve the model’s initialization for learning at test time via meta-learning at training time. Overall, our method, a form of Test-Time Training (TTT), is End-to-End (E2E) both at test time (via next-token prediction) and training time (via meta-learning), in contrast to previous forms. We conduct extensive experiments with a focus on scaling properties. In particular, for 3B models trained with 164B tokens, our method (TTT-E2E) scales with context length in the same way as Transformer with full attention, while others, such as Mamba 2 and Gated DeltaNet, do not. However, similar to RNNs, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context. Our code is publicly available.\n\nFigure 1. Scaling with context length, in terms of test loss (left) and latency (right). Left: Our method (TTT-E2E) turns the worst line (green) into the best (blue) at 128K context length. Loss \\Delta (↓), the y-value, is computed as (loss of the reported method) – (loss of Transformer with full attention), so loss \\Delta of full attention itself (orange) is the flat line at y = 0. While other methods produce worse loss \\Delta in longer context, TTT-E2E maintains the same advantage over full attention. All models have 3B parameters and are trained with 164B tokens. Right: Similar to SWA and the RNN baselines, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context on an H100.\n\n* Core contributors. See statement of contributions before references.\n  Correspondence to: arnuv@stanford.edu, kdalal@berkeley.edu, yusun@cs.stanford.edu.\n\n1",
+      "images": [
+        {
+          "label": "Figure",
+          "raw_label": "Figure",
+          "reading_order": 6,
+          "bbox": [
+            248,
+            1068,
+            1374,
+            1511
+          ],
+          "size": [
+            1126,
+            443
+          ],
+          "file": "test_p001_b006_Figure.png"
+        }
+      ],
+      "blocks": [
+        {
+          "label": "PageHeader",
+          "raw_label": "Page-Header",
+          "reading_order": 0,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            40,
+            583,
+            101,
+            1526
+          ],
+          "image": null,
+          "html": "arXiv:2512.23675v2 [cs.LG] 31 Dec 2025",
+          "text": "arXiv:2512.23675v2 [cs.LG] 31 Dec 2025"
+        },
+        {
+          "label": "SectionHeader",
+          "raw_label": "Section-Header",
+          "reading_order": 1,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            390,
+            300,
+            1234,
+            350
+          ],
+          "image": null,
+          "html": "<h1>End-to-End Test-Time Training for Long Context</h1>",
+          "text": "End-to-End Test-Time Training for Long Context"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 2,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            289,
+            397,
+            1338,
+            510
+          ],
+          "image": null,
+          "html": "<p>Arnuv Tandon<sup>*1,3</sup>, Karan Dalal<sup>*1,4</sup>, Xinhao Li<sup>*5</sup>, Daniel Koceja<sup>*3</sup>, Marcel Rød<sup>*3</sup>, Sam Buchanan<sup>4</sup>, Xiaolong Wang<sup>5</sup>, Jure Leskovec<sup>3</sup>, Sanmi Koyejo<sup>3</sup>, Tatsunori Hashimoto<sup>3</sup>, Carlos Guestrin<sup>3</sup>, Jed McCaleb<sup>1</sup>, Yejin Choi<sup>2</sup>, Yu Sun<sup>*2,3</sup></p>",
+          "text": "Arnuv Tandon*1,3, Karan Dalal*1,4, Xinhao Li*5, Daniel Koceja*3, Marcel Rød*3, Sam Buchanan4, Xiaolong Wang5, Jure Leskovec3, Sanmi Koyejo3, Tatsunori Hashimoto3, Carlos Guestrin3, Jed McCaleb1, Yejin Choi2, Yu Sun*2,3"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 3,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            327,
+            507,
+            1291,
+            551
+          ],
+          "image": null,
+          "html": "<p><sup>1</sup> Astera Institute    <sup>2</sup> NVIDIA    <sup>3</sup> Stanford University    <sup>4</sup> UC Berkeley    <sup>5</sup> UC San Diego</p>",
+          "text": "1 Astera Institute    2 NVIDIA    3 Stanford University    4 UC Berkeley    5 UC San Diego"
+        },
+        {
+          "label": "SectionHeader",
+          "raw_label": "Section-Header",
+          "reading_order": 4,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            756,
+            621,
+            867,
+            654
+          ],
+          "image": null,
+          "html": "<h2>Abstract</h2>",
+          "text": "Abstract"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 5,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            294,
+            661,
+            1338,
+            1021
+          ],
+          "image": null,
+          "html": "<p>We formulate long-context language modeling as a problem in continual learning rather than architecture design. Under this formulation, we only use a standard architecture – a Transformer with sliding-window attention. However, our model continues learning at test time via next-token prediction on the given context, compressing the context it reads into its weights. In addition, we improve the model’s initialization for learning at test time via meta-learning at training time. Overall, our method, a form of Test-Time Training (TTT), is End-to-End (E2E) both at test time (via next-token prediction) and training time (via meta-learning), in contrast to previous forms. We conduct extensive experiments with a focus on scaling properties. In particular, for 3B models trained with 164B tokens, our method (TTT-E2E) scales with context length in the same way as Transformer with full attention, while others, such as Mamba 2 and Gated DeltaNet, do not. However, similar to RNNs, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context. Our <a href=\"#\">code</a> is publicly available.</p>",
+          "text": "We formulate long-context language modeling as a problem in continual learning rather than architecture design. Under this formulation, we only use a standard architecture – a Transformer with sliding-window attention. However, our model continues learning at test time via next-token prediction on the given context, compressing the context it reads into its weights. In addition, we improve the model’s initialization for learning at test time via meta-learning at training time. Overall, our method, a form of Test-Time Training (TTT), is End-to-End (E2E) both at test time (via next-token prediction) and training time (via meta-learning), in contrast to previous forms. We conduct extensive experiments with a focus on scaling properties. In particular, for 3B models trained with 164B tokens, our method (TTT-E2E) scales with context length in the same way as Transformer with full attention, while others, such as Mamba 2 and Gated DeltaNet, do not. However, similar to RNNs, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context. Our code is publicly available."
+        },
+        {
+          "label": "Figure",
+          "raw_label": "Figure",
+          "reading_order": 6,
+          "confidence": 0.9904,
+          "skipped": true,
+          "error": false,
+          "bbox": [
+            248,
+            1068,
+            1374,
+            1511
+          ],
+          "image": "test_p001_b006_Figure.png",
+          "html": "",
+          "text": ""
+        },
+        {
+          "label": "Caption",
+          "raw_label": "Caption",
+          "reading_order": 7,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            229,
+            1546,
+            1407,
+            1759
+          ],
+          "image": null,
+          "html": "<p>Figure 1. Scaling with context length, in terms of test loss (left) and latency (right). <b>Left:</b> Our method (TTT-E2E) turns the worst line (green) into the best (blue) at 128K context length. Loss <math>\\Delta</math> (↓), the <math>y</math>-value, is computed as (loss of the reported method) – (loss of Transformer with full attention), so loss <math>\\Delta</math> of full attention itself (orange) is the flat line at <math>y = 0</math>. While other methods produce worse loss <math>\\Delta</math> in longer context, TTT-E2E maintains the same advantage over full attention. All models have 3B parameters and are trained with 164B tokens. <b>Right:</b> Similar to SWA and the RNN baselines, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context on an H100.</p>",
+          "text": "Figure 1. Scaling with context length, in terms of test loss (left) and latency (right). Left: Our method (TTT-E2E) turns the worst line (green) into the best (blue) at 128K context length. Loss \\Delta (↓), the y-value, is computed as (loss of the reported method) – (loss of Transformer with full attention), so loss \\Delta of full attention itself (orange) is the flat line at y = 0. While other methods produce worse loss \\Delta in longer context, TTT-E2E maintains the same advantage over full attention. All models have 3B parameters and are trained with 164B tokens. Right: Similar to SWA and the RNN baselines, TTT-E2E has constant inference latency regardless of context length, making it 2.7× faster than full attention for 128K context on an H100."
+        },
+        {
+          "label": "Footnote",
+          "raw_label": "Footnote",
+          "reading_order": 8,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            229,
+            1793,
+            1130,
+            1854
+          ],
+          "image": null,
+          "html": "<p><sup>*</sup> Core contributors. See statement of contributions before references.<br/>\n  Correspondence to: <a href=\"mailto:arnuv@stanford.edu\">arnuv@stanford.edu</a>, <a href=\"mailto:kdalal@berkeley.edu\">kdalal@berkeley.edu</a>, <a href=\"mailto:yusun@cs.stanford.edu\">yusun@cs.stanford.edu</a>.</p>",
+          "text": "* Core contributors. See statement of contributions before references.\n  Correspondence to: arnuv@stanford.edu, kdalal@berkeley.edu, yusun@cs.stanford.edu."
+        },
+        {
+          "label": "PageFooter",
+          "raw_label": "Page-Footer",
+          "reading_order": 9,
+          "confidence": 0.9904,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            797,
+            1917,
+            828,
+            1957
+          ],
+          "image": null,
+          "html": "1",
+          "text": "1"
+        }
+      ]
+    },
+    {
+      "page": 2,
+      "image_size": [
+        1632,
+        2112
+      ],
+      "text": "1 Introduction\n\nHumans are able to improve themselves with more experience throughout their lives, despite their imperfect recall of the exact details. Consider your first lecture in machine learning: You might not recall the instructor's first word during the lecture, but the intuition you learned is probably helping you understand this paper, even if that lecture happened years ago.\n\nOn the other hand, Transformers with self-attention still struggle to efficiently process long context equivalent to years of human experience, in part because they are designed for nearly lossless recall. Self-attention over the full context, also known as full attention, must scan through the keys and values of all previous tokens for every new token. As a consequence, it readily attends to every detail, but its cost per token grows linearly with context length and quickly becomes prohibitive.\n\nAs an alternative to Transformers, RNNs such as Mamba 2 [32] and Gated DeltaNet [104] have constant cost per token, but become less effective in longer context, as shown in Figure 1. Some modern architectures approximate full attention with a sliding window [1, 107], or stack attention and RNN layers together [91, 11]. However, these techniques are still less effective than full attention in using longer context to achieve better performance in language modeling.\n\nHow can we design an effective method for language modeling with only constant cost per token? Specifically, how can we achieve better performance in longer context without recalling every detail, as in the opening example? The key mechanism is compression. For example, humans compress a massive amount of experience into their brains, which preserve the important information while leaving out many details. For language models, training with next-token prediction also compresses a massive amount of data into their weights. So what if we just continue training the language model at test time via next-token prediction on the given context?\n\nThis form of Test-Time Training (TTT), similar to an old idea known as dynamic evaluation [72, 60], still has a missing piece: At training time, we were optimizing the model for its loss out of the box, not for its loss after TTT. To resolve this mismatch, we prepare the model's initialization for TTT via meta-learning [38, 79, 58] instead of standard pre-training. Specifically, each training sequence is first treated as if it were a test sequence, so we perform TTT on it in the inner loop. Then we average the loss after TTT over many independent training sequences, and optimize this average w.r.t. the model's initialization for TTT through gradients of gradients in the outer loop [71, 3, 27].\n\nIn summary, our method is end-to-end in two ways. Our inner loop directly optimizes the next-token prediction loss at the end of the network, in contrast to prior work on long-context TTT [86, 110]; Subsection 2.4 explains this difference through an alternative derivation of our method. Moreover, our outer loop directly optimizes the final loss after TTT, in contrast to dynamic evaluation [72, 60], as discussed. Our key results are highlighted in Figure 1, with the rest presented in Section 3.\n\nThe conceptual framework of TTT has a long history with many applications beyond long context, and many forms without meta-learning [85, 12, 45, 2]. Our work is also inspired by the literature on fast weights [38, 79, 77, 49], especially [17] by Clark et al., which shares our high-level approach. Section 4 discusses related work in detail.\n\n2 Method\n\nConsider the standard task of next-token prediction, which consists of two phases at test time:\n\n• Prefill: conditioning on T + 1 given tokens x_0, x_1, \\dots, x_T, where x_0 is the Beginning of Sequence (<\\text{BOS}>) token.\n• Decode: predicting a distribution \\hat{p}_{T+1} over all possible instantiations of the next token.\n\nThe test loss is then \\text{CE}(\\hat{p}_{T+1}, x_{T+1}), where \\text{CE} is the cross entropy and x_{T+1} is generated by nature.\n\n2",
+      "images": [],
+      "blocks": [
+        {
+          "label": "SectionHeader",
+          "raw_label": "Section-Header",
+          "reading_order": 0,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            230,
+            529,
+            274
+          ],
+          "image": null,
+          "html": "<h1>1 Introduction</h1>",
+          "text": "1 Introduction"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 1,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            300,
+            1400,
+            432
+          ],
+          "image": null,
+          "html": "<p>Humans are able to improve themselves with more experience throughout their lives, despite their imperfect recall of the exact details. Consider your first lecture in machine learning: You might not recall the instructor's first word during the lecture, but the intuition you learned is probably helping you understand this paper, even if that lecture happened years ago.</p>",
+          "text": "Humans are able to improve themselves with more experience throughout their lives, despite their imperfect recall of the exact details. Consider your first lecture in machine learning: You might not recall the instructor's first word during the lecture, but the intuition you learned is probably helping you understand this paper, even if that lecture happened years ago."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 2,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            443,
+            1400,
+            605
+          ],
+          "image": null,
+          "html": "<p>On the other hand, Transformers with self-attention still struggle to efficiently process long context equivalent to years of human experience, in part because they are designed for nearly lossless recall. Self-attention over the full context, also known as full attention, must scan through the keys and values of all previous tokens for every new token. As a consequence, it readily attends to every detail, but its cost per token grows linearly with context length and quickly becomes prohibitive.</p>",
+          "text": "On the other hand, Transformers with self-attention still struggle to efficiently process long context equivalent to years of human experience, in part because they are designed for nearly lossless recall. Self-attention over the full context, also known as full attention, must scan through the keys and values of all previous tokens for every new token. As a consequence, it readily attends to every detail, but its cost per token grows linearly with context length and quickly becomes prohibitive."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 3,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            616,
+            1400,
+            781
+          ],
+          "image": null,
+          "html": "<p>As an alternative to Transformers, RNNs such as Mamba 2 [32] and Gated DeltaNet [104] have constant cost per token, but become less effective in longer context, as shown in Figure 1. Some modern architectures approximate full attention with a sliding window [1, 107], or stack attention and RNN layers together [91, 11]. However, these techniques are still less effective than full attention in using longer context to achieve better performance in language modeling.</p>",
+          "text": "As an alternative to Transformers, RNNs such as Mamba 2 [32] and Gated DeltaNet [104] have constant cost per token, but become less effective in longer context, as shown in Figure 1. Some modern architectures approximate full attention with a sliding window [1, 107], or stack attention and RNN layers together [91, 11]. However, these techniques are still less effective than full attention in using longer context to achieve better performance in language modeling."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 4,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            790,
+            1400,
+            1019
+          ],
+          "image": null,
+          "html": "<p>How can we design an effective method for language modeling with only constant cost per token? Specifically, how can we achieve better performance in longer context without recalling every detail, as in the opening example? The key mechanism is compression. For example, humans compress a massive amount of experience into their brains, which preserve the important information while leaving out many details. For language models, training with next-token prediction also compresses a massive amount of data into their weights. So what if we just continue training the language model at test time via next-token prediction on the given context?</p>",
+          "text": "How can we design an effective method for language modeling with only constant cost per token? Specifically, how can we achieve better performance in longer context without recalling every detail, as in the opening example? The key mechanism is compression. For example, humans compress a massive amount of experience into their brains, which preserve the important information while leaving out many details. For language models, training with next-token prediction also compresses a massive amount of data into their weights. So what if we just continue training the language model at test time via next-token prediction on the given context?"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 5,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1030,
+            1400,
+            1258
+          ],
+          "image": null,
+          "html": "<p>This form of Test-Time Training (TTT), similar to an old idea known as dynamic evaluation [72, 60], still has a missing piece: At training time, we were optimizing the model for its loss out of the box, not for its loss after TTT. To resolve this mismatch, we prepare the model's initialization for TTT via meta-learning [38, 79, 58] instead of standard pre-training. Specifically, each training sequence is first treated as if it were a test sequence, so we perform TTT on it in the inner loop. Then we average the loss after TTT over many independent training sequences, and optimize this average w.r.t. the model's initialization for TTT through gradients of gradients in the outer loop [71, 3, 27].</p>",
+          "text": "This form of Test-Time Training (TTT), similar to an old idea known as dynamic evaluation [72, 60], still has a missing piece: At training time, we were optimizing the model for its loss out of the box, not for its loss after TTT. To resolve this mismatch, we prepare the model's initialization for TTT via meta-learning [38, 79, 58] instead of standard pre-training. Specifically, each training sequence is first treated as if it were a test sequence, so we perform TTT on it in the inner loop. Then we average the loss after TTT over many independent training sequences, and optimize this average w.r.t. the model's initialization for TTT through gradients of gradients in the outer loop [71, 3, 27]."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 6,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1267,
+            1400,
+            1433
+          ],
+          "image": null,
+          "html": "<p>In summary, our method is end-to-end in two ways. Our inner loop directly optimizes the next-token prediction loss at the end of the network, in contrast to prior work on long-context TTT [86, 110]; Subsection 2.4 explains this difference through an alternative derivation of our method. Moreover, our outer loop directly optimizes the final loss after TTT, in contrast to dynamic evaluation [72, 60], as discussed. Our key results are highlighted in Figure 1, with the rest presented in Section 3.</p>",
+          "text": "In summary, our method is end-to-end in two ways. Our inner loop directly optimizes the next-token prediction loss at the end of the network, in contrast to prior work on long-context TTT [86, 110]; Subsection 2.4 explains this difference through an alternative derivation of our method. Moreover, our outer loop directly optimizes the final loss after TTT, in contrast to dynamic evaluation [72, 60], as discussed. Our key results are highlighted in Figure 1, with the rest presented in Section 3."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 7,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1444,
+            1400,
+            1575
+          ],
+          "image": null,
+          "html": "<p>The conceptual framework of TTT has a long history with many applications beyond long context, and many forms without meta-learning [85, 12, 45, 2]. Our work is also inspired by the literature on fast weights [38, 79, 77, 49], especially [17] by Clark et al., which shares our high-level approach. Section 4 discusses related work in detail.</p>",
+          "text": "The conceptual framework of TTT has a long history with many applications beyond long context, and many forms without meta-learning [85, 12, 45, 2]. Our work is also inspired by the literature on fast weights [38, 79, 77, 49], especially [17] by Clark et al., which shares our high-level approach. Section 4 discusses related work in detail."
+        },
+        {
+          "label": "SectionHeader",
+          "raw_label": "Section-Header",
+          "reading_order": 8,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1622,
+            441,
+            1664
+          ],
+          "image": null,
+          "html": "<h1>2 Method</h1>",
+          "text": "2 Method"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 9,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1687,
+            1352,
+            1725
+          ],
+          "image": null,
+          "html": "<p>Consider the standard task of next-token prediction, which consists of two phases at test time:</p>",
+          "text": "Consider the standard task of next-token prediction, which consists of two phases at test time:"
+        },
+        {
+          "label": "ListGroup",
+          "raw_label": "List-Group",
+          "reading_order": 10,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            271,
+            1727,
+            1400,
+            1837
+          ],
+          "image": null,
+          "html": "<ul><li>• Prefill: conditioning on <math>T + 1</math> given tokens <math>x_0, x_1, \\dots, x_T</math>, where <math>x_0</math> is the Beginning of Sequence (<math>&lt;\\text{BOS}&gt;</math>) token.</li><li>• Decode: predicting a distribution <math>\\hat{p}_{T+1}</math> over all possible instantiations of the next token.</li></ul>",
+          "text": "• Prefill: conditioning on T + 1 given tokens x_0, x_1, \\dots, x_T, where x_0 is the Beginning of Sequence (<\\text{BOS}>) token.\n• Decode: predicting a distribution \\hat{p}_{T+1} over all possible instantiations of the next token."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 11,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1839,
+            1391,
+            1879
+          ],
+          "image": null,
+          "html": "<p>The test loss is then <math>\\text{CE}(\\hat{p}_{T+1}, x_{T+1})</math>, where <math>\\text{CE}</math> is the cross entropy and <math>x_{T+1}</math> is generated by nature.</p>",
+          "text": "The test loss is then \\text{CE}(\\hat{p}_{T+1}, x_{T+1}), where \\text{CE} is the cross entropy and x_{T+1} is generated by nature."
+        },
+        {
+          "label": "PageFooter",
+          "raw_label": "Page-Footer",
+          "reading_order": 12,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            798,
+            1922,
+            829,
+            1957
+          ],
+          "image": null,
+          "html": "<p>2</p>",
+          "text": "2"
+        }
+      ]
+    },
+    {
+      "page": 3,
+      "image_size": [
+        1632,
+        2112
+      ],
+      "text": "Figure 2. Toy example. Left: Given x_1 and x_2 as context, we want to predict the unknown x_3. Our toy baseline, a Transformer without self-attention (using only the upward arrows), is effectively a bigram since it has no memory of x_1. TTT (using all the arrows) first tries to predict x_2 from x_1 as an exercise: It computes the loss \\ell_2 between x_2 and the prediction \\hat{p}_2, then takes a gradient step on \\ell_2. Now information of x_1 is stored in the updated MLPs (blue). Right: Token-level test loss \\ell_t for various methods in our toy example, as discussed in Subsection 2.2, except for TTT-E2E b = 16 discussed in Subsection 2.3. In particular, TTT-E2E b = 1 turns the green line (our toy baseline) into the blue line, which performs almost as well as orange (using full attention).\n\nFor ease of exposition, we first focus on the task of prefilling T + 1 tokens and then decoding a single token. In this setting, self-attention over the full context, also known as full attention, has computational complexity O(T^2) for prefill and O(T) for decode. We now discuss our method using Test-Time Training (TTT), which has O(T) for prefill and O(1) for decode.\n\n2.1 TTT via Next-Token Prediction\n\nTo motivate our main method, we introduce a toy example that we will develop all the way up to the middle of Subsection 2.3. This toy example is based on a rather silly architecture: a Transformer with all of its self-attention layers removed, leaving only the MLP layers. Our toy baseline – blithely applying this architecture to language modeling – is effectively a bigram since it has no memory of previous tokens. Our goal is to understand the effect of TTT in isolation, without the confounding of other sequence modeling components.\n\nOne way to give our baseline architecture some memory is to train it on the context. Similar to standard pre-training, we can predict \\hat{p}_t and compare it to x_t at every t = 1, \\dots, T as an exercise. Specifically, denote the baseline architecture as f with weights W, then the standard next-token prediction loss at time t can be written as:\n\n\\ell_t(W) = \\text{CE}(f(x_{t-1}; W), x_t). \\quad (1)\n\nWe update W at test time for every t = 1, \\dots, T, in sequential order, with gradient descent:\n\nW_t = W_{t-1} - \\eta \\nabla \\ell_t(W_{t-1}), \\quad (2)\n\nwhere \\eta is a learning rate, and W_0 is the initial weights at test time. In the end, we simply output \\hat{p}_{T+1} = f(x_T; W_T). We illustrate this form of TTT in the left panel of Figure 2: Our toy baseline only uses the upward arrows, while TTT adds the backward and horizontal arrows.\n\n3",
+      "images": [
+        {
+          "label": "Figure",
+          "raw_label": "Figure",
+          "reading_order": 0,
+          "bbox": [
+            239,
+            255,
+            1369,
+            667
+          ],
+          "size": [
+            1130,
+            412
+          ],
+          "file": "test_p003_b000_Figure.png"
+        }
+      ],
+      "blocks": [
+        {
+          "label": "Figure",
+          "raw_label": "Figure",
+          "reading_order": 0,
+          "confidence": 0.9955,
+          "skipped": true,
+          "error": false,
+          "bbox": [
+            239,
+            255,
+            1369,
+            667
+          ],
+          "image": "test_p003_b000_Figure.png",
+          "html": "",
+          "text": ""
+        },
+        {
+          "label": "Caption",
+          "raw_label": "Caption",
+          "reading_order": 1,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            697,
+            1407,
+            912
+          ],
+          "image": null,
+          "html": "<p>Figure 2. Toy example. <b>Left:</b> Given <math>x_1</math> and <math>x_2</math> as context, we want to predict the unknown <math>x_3</math>. Our toy baseline, a Transformer without self-attention (using only the upward arrows), is effectively a bigram since it has no memory of <math>x_1</math>. TTT (using all the arrows) first tries to predict <math>x_2</math> from <math>x_1</math> as an exercise: It computes the loss <math>\\ell_2</math> between <math>x_2</math> and the prediction <math>\\hat{p}_2</math>, then takes a gradient step on <math>\\ell_2</math>. Now information of <math>x_1</math> is stored in the updated MLPs (blue). <b>Right:</b> Token-level test loss <math>\\ell_t</math> for various methods in our toy example, as discussed in Subsection 2.2, except for TTT-E2E <math>b = 16</math> discussed in Subsection 2.3. In particular, TTT-E2E <math>b = 1</math> turns the green line (our toy baseline) into the blue line, which performs almost as well as orange (using full attention).</p>",
+          "text": "Figure 2. Toy example. Left: Given x_1 and x_2 as context, we want to predict the unknown x_3. Our toy baseline, a Transformer without self-attention (using only the upward arrows), is effectively a bigram since it has no memory of x_1. TTT (using all the arrows) first tries to predict x_2 from x_1 as an exercise: It computes the loss \\ell_2 between x_2 and the prediction \\hat{p}_2, then takes a gradient step on \\ell_2. Now information of x_1 is stored in the updated MLPs (blue). Right: Token-level test loss \\ell_t for various methods in our toy example, as discussed in Subsection 2.2, except for TTT-E2E b = 16 discussed in Subsection 2.3. In particular, TTT-E2E b = 1 turns the green line (our toy baseline) into the blue line, which performs almost as well as orange (using full attention)."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 2,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            959,
+            1407,
+            1093
+          ],
+          "image": null,
+          "html": "<p>For ease of exposition, we first focus on the task of prefilling <math>T + 1</math> tokens and then decoding a single token. In this setting, self-attention over the full context, also known as full attention, has computational complexity <math>O(T^2)</math> for prefill and <math>O(T)</math> for decode. We now discuss our method using Test-Time Training (TTT), which has <math>O(T)</math> for prefill and <math>O(1)</math> for decode.</p>",
+          "text": "For ease of exposition, we first focus on the task of prefilling T + 1 tokens and then decoding a single token. In this setting, self-attention over the full context, also known as full attention, has computational complexity O(T^2) for prefill and O(T) for decode. We now discuss our method using Test-Time Training (TTT), which has O(T) for prefill and O(1) for decode."
+        },
+        {
+          "label": "SectionHeader",
+          "raw_label": "Section-Header",
+          "reading_order": 3,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1125,
+            772,
+            1165
+          ],
+          "image": null,
+          "html": "<h2>2.1 TTT via Next-Token Prediction</h2>",
+          "text": "2.1 TTT via Next-Token Prediction"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 4,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1178,
+            1407,
+            1376
+          ],
+          "image": null,
+          "html": "<p>To motivate our main method, we introduce a toy example that we will develop all the way up to the middle of Subsection 2.3. This toy example is based on a rather silly architecture: a Transformer with all of its self-attention layers removed, leaving only the MLP layers. Our toy baseline – blithely applying this architecture to language modeling – is effectively a bigram since it has no memory of previous tokens. Our goal is to understand the effect of TTT in isolation, without the confounding of other sequence modeling components.</p>",
+          "text": "To motivate our main method, we introduce a toy example that we will develop all the way up to the middle of Subsection 2.3. This toy example is based on a rather silly architecture: a Transformer with all of its self-attention layers removed, leaving only the MLP layers. Our toy baseline – blithely applying this architecture to language modeling – is effectively a bigram since it has no memory of previous tokens. Our goal is to understand the effect of TTT in isolation, without the confounding of other sequence modeling components."
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 5,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1385,
+            1407,
+            1520
+          ],
+          "image": null,
+          "html": "<p>One way to give our baseline architecture some memory is to train it on the context. Similar to standard pre-training, we can predict <math>\\hat{p}_t</math> and compare it to <math>x_t</math> at every <math>t = 1, \\dots, T</math> as an exercise. Specifically, denote the baseline architecture as <math>f</math> with weights <math>W</math>, then the standard next-token prediction loss at time <math>t</math> can be written as:</p>",
+          "text": "One way to give our baseline architecture some memory is to train it on the context. Similar to standard pre-training, we can predict \\hat{p}_t and compare it to x_t at every t = 1, \\dots, T as an exercise. Specifically, denote the baseline architecture as f with weights W, then the standard next-token prediction loss at time t can be written as:"
+        },
+        {
+          "label": "Equation",
+          "raw_label": "Equation-Block",
+          "reading_order": 6,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            648,
+            1537,
+            1407,
+            1579
+          ],
+          "image": null,
+          "html": "<math display=\"block\">\\ell_t(W) = \\text{CE}(f(x_{t-1}; W), x_t). \\quad (1)</math>",
+          "text": "\\ell_t(W) = \\text{CE}(f(x_{t-1}; W), x_t). \\quad (1)"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 7,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            231,
+            1601,
+            1294,
+            1638
+          ],
+          "image": null,
+          "html": "<p>We update <math>W</math> at test time for every <math>t = 1, \\dots, T</math>, in sequential order, with gradient descent:</p>",
+          "text": "We update W at test time for every t = 1, \\dots, T, in sequential order, with gradient descent:"
+        },
+        {
+          "label": "Equation",
+          "raw_label": "Equation-Block",
+          "reading_order": 8,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            661,
+            1656,
+            1407,
+            1695
+          ],
+          "image": null,
+          "html": "<math display=\"block\">W_t = W_{t-1} - \\eta \\nabla \\ell_t(W_{t-1}), \\quad (2)</math>",
+          "text": "W_t = W_{t-1} - \\eta \\nabla \\ell_t(W_{t-1}), \\quad (2)"
+        },
+        {
+          "label": "Text",
+          "raw_label": "Text",
+          "reading_order": 9,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            227,
+            1710,
+            1407,
+            1816
+          ],
+          "image": null,
+          "html": "<p>where <math>\\eta</math> is a learning rate, and <math>W_0</math> is the initial weights at test time. In the end, we simply output <math>\\hat{p}_{T+1} = f(x_T; W_T)</math>. We illustrate this form of TTT in the left panel of Figure 2: Our toy baseline only uses the upward arrows, while TTT adds the backward and horizontal arrows.</p>",
+          "text": "where \\eta is a learning rate, and W_0 is the initial weights at test time. In the end, we simply output \\hat{p}_{T+1} = f(x_T; W_T). We illustrate this form of TTT in the left panel of Figure 2: Our toy baseline only uses the upward arrows, while TTT adds the backward and horizontal arrows."
+        },
+        {
+          "label": "PageFooter",
+          "raw_label": "Page-Footer",
+          "reading_order": 10,
+          "confidence": 0.9955,
+          "skipped": false,
+          "error": false,
+          "bbox": [
+            797,
+            1920,
+            829,
+            1957
+          ],
+          "image": null,
+          "html": "<p>3</p>",
+          "text": "3"
+        }
+      ]
+    }
+  ]
+}

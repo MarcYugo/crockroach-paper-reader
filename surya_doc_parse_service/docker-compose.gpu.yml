@@ -1,0 +1,51 @@
+# ============================================================
+#  Surya 2 推理服务 —— GPU 覆盖文件
+#
+#  用法(与基础文件一起):
+#      docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+#  说明:
+#    - 把 BASE_IMAGE 换成 CUDA devel 镜像(自带 nvcc), 否则会报 CUDA Toolkit not found
+#    - 把 ENABLE_CUDA 覆盖为 1, 构建 CUDA 版 llama-server
+#    - 通过 deploy.resources 为容器分配全部 NVIDIA GPU
+#    - 前置条件: 宿主机装好 nvidia-container-toolkit 并注册 nvidia runtime, 否则启动时报
+#        Error response from daemon: could not select device driver "nvidia" with capabilities: [[gpu]]
+#      检查: docker info | grep -i runtimes  必须能看到 nvidia(只有 runc 就是没配)
+#      修复: apt-get install -y nvidia-container-toolkit
+#            nvidia-ctk runtime configure --runtime=docker
+#            systemctl restart docker   (WSL 无 systemd: service docker restart)
+#            docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+#      WSL2 注意: 显卡驱动只装 Windows 端, 不要在 WSL 里装 Linux 版 NVIDIA 驱动。
+#    - 若仍报同样错误, 可改用新版写法(Compose >= 2.30)替代下面的 deploy 段:
+#        gpus: all
+#
+#  可选: 只编你显卡需要的架构可显著加快构建
+#      CUDA_ARCHITECTURES: "86"       # RTX 30 系
+#      CUDA_ARCHITECTURES: "89"       # RTX 40 系
+#      CUDA_ARCHITECTURES: "75;80"    # 混合
+# ============================================================
+
+services:
+  surya-server:
+    image: surya:gpu
+    build:
+      args:
+        # 关键: GPU 构建必须用 devel 版 CUDA 镜像(含 nvcc)。
+        # ⚠ CUDA 版本必须 <= 宿主机驱动支持的 CUDA 版本(即 `nvidia-smi` 右上角 "CUDA Version"),
+        #   否则容器内 llama.cpp 初始化 CUDA 会失败并静默退回 CPU:
+        #     ggml_cuda_init: failed to initialize CUDA: forward compatibility was attempted on non supported HW
+        #     warning: no usable GPU found, --gpu-layers option will be ignored
+        #   GeForce 不支持"前向兼容(forward compatibility)", 所以不能靠新版 CUDA 镜像去兼容旧驱动。
+        #   对照: 驱动 525.x -> CUDA 12.0 | 驱动 535.x -> CUDA 12.2 | 驱动 >=550.54.14 -> CUDA 12.4
+        #   当前 12.2.2 是为匹配驱动 535.129.03(CUDA 12.2); 驱动升级后可改回 12.4.1。
+        BASE_IMAGE: nvidia/cuda:12.2.2-devel-ubuntu22.04
+        ENABLE_CUDA: "1"
+        # 可覆盖: 例如 CUDA_ARCHITECTURES: "89"
+        # CUDA_ARCHITECTURES: "75;80;86;89"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

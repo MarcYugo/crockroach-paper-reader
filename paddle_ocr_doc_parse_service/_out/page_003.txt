@@ -1,0 +1,35 @@
+Figure 3: The demonstration of crossover. The leftmost tree shows the tree representation of the formulaic alpha 'close – open)/(high – low)'. The trees on the right are two children after crossover. op: operator. f: factor.
+
+The IC of an alpha indicates the relevance between the alpha and the stock returns, and should be as high as possible⁴.
+
+2.3 Similarity between Alphas
+
+The similarity between the alpha \( i \) and \( j \) is calculated as:
+
+\[ sim(i, j) = \frac{1}{T} \sum_{t=1}^{T} corr(\alpha_t^{(i)}, \alpha_t^{(j)}) \]
+
+A group of alphas is diverse if the similarity between any two alphas in the group is lower than 0.7.
+
+In the process of mining formulaic alphas, our goal is to find as many diverse formulaic alphas with high IC as possible within limited computational resources.
+
+3 AutoAlpha
+
+AutoAlpha is a framework based on genetic algorithms [Whitley, 1994]. Genetic algorithm is a kind of metaheuristic optimization algorithm which draws inspiration from biological process that produces new offspring and evolves a species. The vanilla genetic algorithm uses mechanisms such as reproduction, crossover, mutation and selection to give birth to new offspring. In each step of regeneration, it uses fitness function to select the best-fit individuals for reproduction. After we give birth to new offspring through crossover and mutation operations, we replace the least-fit individuals in the population with new individuals to realize the mechanism of elimination through competition.
+
+In order to apply the genetic algorithm for mining formulaic alphas, first we need to define the genetic representation of a formulaic alpha. As shown in the leftmost tree of Figure 3, a formulaic alpha can be represented as a formulaic tree. It would be much easier for us to carry out crossover and mutation for trees. Figure 3 shows the crossover between two formulaic alphas of depth 2. We perform the crossover in the same depth level to prevent the depth from increasing. That is, the crossover between gene1 and gene3 in Figure 3 is not allowed. The gene2 and gene3 are called root genes which are directly attached to their root operators while gene1 is not.
+
+3.1 Hierarchical Structure
+
+The search space of trees is huge and the effective alphas are very sparse. In our experiment, we find out that the standard genetic algorithm (e.g., that implemented in python package
+
+Figure 4: The IC of the root genes of the top 100 discovered formulaic alphas and its distribution. For example, in the left figure, the blue histogram is the density plot of IC of the formulaic alphas of depth 2 (estimated by 20000 randomly generated samples). And the red histogram is the frequency plot of IC of the root genes of the top 100 discovered formulaic alphas of depth 3.
+
+'gplearn' is generally inefficient in initializing the population and exploring the search space for mining formulaic alphas (see the results in Section 4.4). For remedy, We propose a novel hierarchical search strategy for the genetic algorithm, that is significantly more efficient in the initialization and exploration of the search space.
+
+Motivation
+
+In the early stage of this research, we have been using vanilla genetic algorithms for mining formulaic alphas. An interesting phenomenon occurs during the experiments that the algorithm usually converges to similar formulaic alphas with 'vwap/close' as a piece of its genes, 'vwap' is the Volume Weighted Average Price of a stock. The gene vwap/close itself is also an effective alpha which relates to the phenomenon of mean reversion. While vwap/close itself is an effective formulaic alpha, the formulaic alphas of higher depth which contain vwap/close as a piece of its genes usually combine this mean reversion information with some other information and have higher effectiveness.
+
+Based on such phenomenon, we propose a hypothesis about the inherent pattern of the formulaic alphas, that is, most of the effective alphas have at least one effective root gene. Intuitively, if we want to obtain the formulaic alphas of higher depth, we should search nearby the effective alphas of lower depth. We design an experiment to verifies the hypothesis. First, we use the vanilla genetic algorithm for evolving formulaic alphas. Then we select the top 100 discovered formulaic alphas. For each selected alpha, we further collect its root gene with highest IC. We use the density plot to show that those root genes are effective and are hard to obtain by random generation. The results are shown in the Figure 4.
+
+Based on the analysis, if we maintain a population with diverse

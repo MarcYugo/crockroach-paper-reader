@@ -1,0 +1,40 @@
+# ============================================================
+#  Surya 2 推理服务 (llama-server) —— Docker Compose
+#
+#  默认 CPU 版:
+#      docker compose up -d --build
+#      docker compose logs -f surya-server
+#
+#  GPU 版(需 NVIDIA Container Toolkit):
+#      docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+#  验证:  curl http://127.0.0.1:8060/health
+#  客户端: python test_surya_service.py --url http://127.0.0.1:8060/v1 --input 你的.pdf
+#
+#  可调环境(以 .env 或命令行传入):
+#      SURYA_PORT=8060     对外端口
+#      LLAMA_PARALLEL=4    并发 slot
+#      LLAMA_CTX=49152     总上下文 (per-slot ≈ ctx/parallel)
+#      LLAMA_NGL=99        卸载层数(CPU 版忽略)
+# ============================================================
+
+services:
+  surya-server:
+    build:
+      context: .
+      args:
+        ENABLE_CUDA: "0"        # CPU 版; GPU 用 docker-compose.gpu.yml 覆盖
+    image: surya:latest
+    container_name: surya-server
+    ports:
+      - "${SURYA_PORT:-8060}:8060"
+    volumes:
+      # 权重不进镜像, 运行时挂载宿主机 checkpoints/(只读)
+      - ./checkpoints:/app/checkpoints:ro
+    environment:
+      LLAMA_HOST: "0.0.0.0"
+      LLAMA_PORT: "8060"
+      LLAMA_PARALLEL: "${LLAMA_PARALLEL:-4}"
+      LLAMA_CTX: "${LLAMA_CTX:-49152}"
+      LLAMA_NGL: "${LLAMA_NGL:-99}"
+    restart: unless-stopped

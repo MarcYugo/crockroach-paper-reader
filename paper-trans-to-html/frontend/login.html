@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · 论文阅读器</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- 首屏先把主题套上：等 CSS/JS 加载完再切会闪一下白 -->
+  <script>try{if(localStorage.getItem("paperReader.theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
+</head>
+<body class="login-body">
+  <button class="theme-fab" id="themeFab" data-theme-btn type="button"
+          title="切换到暗夜模式" aria-label="切换明暗主题"></button>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-head">
+        <div class="login-logo">◆</div>
+        <div>
+          <h1 id="loginTitle">登录</h1>
+          <p class="login-sub" id="loginSub">论文 PDF → HTML 阅读器</p>
+        </div>
+      </div>
+
+      <ol class="steps" id="steps">
+        <li data-s="1" class="on"><i>1</i><span>账号</span></li>
+        <li data-s="2"><i>2</i><span>LLM 服务</span></li>
+      </ol>
+
+      <!-- 第一步：登录 / 注册新账号 / 首次创建管理员账号 -->
+      <form id="accForm" class="login-form" autocomplete="on">
+        <div class="tabs form-tabs" id="accTabs">
+          <button class="tab on" id="tabLogin" type="button">登录</button>
+          <button class="tab" id="tabReg" type="button">注册新账号</button>
+        </div>
+        <p class="login-tip" id="accTip"></p>
+        <div class="field">
+          <label for="username">用户名</label>
+          <input id="username" name="username" autocomplete="username"
+                 placeholder="3-32 位字母/数字/_.@-" required>
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 placeholder="至少 8 位" required>
+        </div>
+        <div class="field" id="confirmWrap" hidden>
+          <label for="password2">确认密码</label>
+          <input id="password2" type="password" autocomplete="new-password"
+                 placeholder="再次输入密码">
+        </div>
+        <div class="form-err" id="accErr" hidden></div>
+        <p class="login-warn" id="loginWarn" hidden></p>
+        <button class="btn primary block" id="accBtn" type="submit">登录</button>
+        <p class="login-tip center"><a href="#" id="switchAcc">使用其他账号登录 →</a></p>
+      </form>
+
+      <!-- 第二步：LLM 服务配置（首次登录时引导填写，可跳过） -->
+      <form id="llmForm" class="login-form" hidden autocomplete="off">
+        <p class="login-tip">
+          翻译功能需要一个大模型服务。填好后立即生效，之后随时可在右上角「⚙ 设置 → LLM 服务」里修改。
+        </p>
+        <div class="field">
+          <label for="providerBtn">服务类型</label>
+          <div class="drop" id="providerDrop">
+            <button class="drop-btn" id="providerBtn" type="button"
+                    aria-haspopup="listbox" aria-expanded="false"></button>
+            <div class="drop-menu" id="providerMenu" role="listbox" hidden></div>
+            <select id="provider" hidden>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="custom">OpenAI 兼容服务(自建/中转)</option>
+              <option value="google">Google 免费兜底(无需 Key)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" data-llm="need">
+          <label for="base_url">服务地址 (Base URL)</label>
+          <input id="base_url" placeholder="https://api.deepseek.com">
+        </div>
+        <div class="field" data-llm="need">
+          <label for="api_key">API Key</label>
+          <!-- new-password：阻止浏览器把保存的站内凭据自动填进来，
+               否则“留空不改”会被自动填充成一个并非用户本意的值 -->
+          <input id="api_key" type="password" autocomplete="new-password"
+                 spellcheck="false" placeholder="sk-...">
+        </div>
+        <div class="field" data-llm="need">
+          <label for="model">模型</label>
+          <input id="model" placeholder="deepseek-chat">
+          <div class="hint">如 deepseek-chat / gpt-4o-mini / claude-sonnet-4-5 / qwen2.5:7b</div>
+        </div>
+        <div class="form-err" id="llmErr" hidden></div>
+        <div class="form-ok" id="llmOk" hidden></div>
+        <div class="row-actions">
+          <button class="btn" type="button" id="testBtn">测试连接</button>
+          <button class="btn primary" type="submit" id="llmBtn">保存并进入</button>
+        </div>
+        <p class="login-tip center"><a href="#" id="skipLlm">稍后配置，先进入 →</a></p>
+      </form>
+    </div>
+    <p class="login-foot">单机自用服务 · 数据存在本机 MongoDB（未连接时回退 <code>data/</code> 目录）</p>
+  </div>
+
+  <div id="toast"></div>
+  <script src="js/common.js"></script>
+  <script src="js/login.js"></script>
+</body>
+</html>

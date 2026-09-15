@@ -1,0 +1,109 @@
+# ============================================================
+# 单机版 MongoDB（Docker Compose）
+# 用法：在本目录（mongo_conf/）执行
+#   cp .env.example .env      # 首次使用，改一下密码
+#   docker compose up -d      # 自动拉镜像并启动
+#   docker compose ps         # 看状态（healthy 即就绪）
+# 详细说明见同目录 README.md
+#
+#  初始化脚本：init/*.sh 由 entrypoint.sh 包装，【每次容器启动】都会执行一遍
+#             （官方镜像原本只在数据卷为空时执行一次）；日志: docker compose logs mongo | grep mongo-init
+# ============================================================
+services:
+  mongo:
+    # 固定小版本，避免 latest/大版本升级导致数据目录不兼容
+    # 国内拉不动时见 README「镜像加速」一节
+    image: mongo:7.0
+    container_name: paper-mongo
+    restart: unless-stopped
+
+    # 自定义入口: 官方镜像只在【数据卷为空】时跑 init 脚本, 这里补上"每次启动都跑一遍"。
+    # 用 bash 显式调用, 免去宿主机脚本执行位(可执行权限)的麻烦。
+    # 初始化失败不会影响 mongod 启动; 看日志: docker compose logs mongo | grep mongo-init
+    entrypoint: ["bash", "/opt/mongo-entrypoint.sh"]
+
+    ports:
+      # 只监听本机回环地址：本机应用（如 run.py）能连，外网/局域网连不上，更安全。
+      # 若确实需要别的机器连，改成 "27017:27017"，并同时把下面的 --bind_ip_all 保留。
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+
+    environment:
+      # 初始化时创建的管理员账号（仅在数据目录为空时生效，见 README「初始化时机」）
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
+      MONGO_INITDB_DATABASE: ${MONGO_APP_DB:-paper}
+      # 业务库的普通账号（由 init/01-init-app-user.sh 创建）
+      MONGO_APP_DB: ${MONGO_APP_DB:-paper}
+      MONGO_APP_USER: ${MONGO_APP_USER:-paper}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-paper123}
+      TZ: Asia/Shanghai
+
+    command:
+      # 单机场景限制 WiredTiger 缓存，否则默认按 (内存-1G)/2 占用
+      - --wiredTigerCacheSizeGB=${MONGO_CACHE_GB:-0.5}
+      - --bind_ip_all
+
+    volumes:
+      # 用命名卷而非 bind mount：Docker 会自动把属主设成容器内的 mongodb(uid 999)，
+      # 避免 Linux 上 bind mount 目录被 root 创建后 Mongo 无权写入的问题。
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+      # ① 首次初始化(数据卷为空时): 走官方机制, 保留作为兜底
+      - ./init:/docker-entrypoint-initdb.d:ro
+      # ② 每次启动: 由上面的自定义 entrypoint 执行(脚本幂等, 与①重复执行无副作用)
+      - ./init:/opt/mongo-init:ro
+      - ./entrypoint.sh:/opt/mongo-entrypoint.sh:ro
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --host 127.0.0.1
+          --username "$$MONGO_INITDB_ROOT_USERNAME"
+          --password "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin
+          --eval "db.adminCommand('ping').ok" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # 日志不要无限增长（JSON 文件默认不轮转）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+    networks:
+      - paper-net
+
+  # ---------------- 可选：图形管理界面 ----------------
+  # 不用就直接删掉这一段（或 docker compose up -d mongo 只起数据库）
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: paper-mongo-express
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MONGO_EXPRESS_PORT:-8081}:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USER:-admin}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD:-admin123}
+    networks:
+      - paper-net
+
+volumes:
+  mongo-data:
+    name: paper-mongo-data
+  mongo-config:
+    name: paper-mongo-config
+
+networks:
+  paper-net:
+    name: paper-mongo-net
+    driver: bridge

@@ -1,0 +1,45 @@
+operators
+factors
+open close high
+low wrap volumes
+
+AutoAlpha
+AutoAlpha
+Stock Ranking
+Prediction
+
+Figure 1: The framework of our approach.
+
+Alpha#71: maxT5, Rank(decay, linear(correlation(T5, Rank(close, 3,43976), T5, Rank(adv180, 12.0647), 18.0175), 4.20501), 15.6948), T5, Rank(decay, linear(rank((low + open) - (vwap + vwap))))*2), 16.4662), 4.4388))
+
+Alpha#72: (rank(decay, linear(correlation(((high + low) / 2), adv40, 8.93345), 10.1519))) / rank(decay, linear(correlation(T5, Rank(vwap, 3.72469), T5, Rank(volume, 18.5188), 6.86671), 2.95011)))
+
+Figure 2: Formulas Alpha#71 and Alpha#72.
+
+prefer to look for multiple diverse solutions with high performance and low correlation.
+
+As shown in Figure 3, a formula alpha can be expressed as a tree where the leaves correspond to raw data and the inner nodes correspond to various operators. As the discrete search space is very large, it is natural to use genetic algorithms to search for effective alphas in the form of trees. However, as we argue below, this is not straightforward and there are several challenges we need to address.
+
+Challenge 1: Quickly locate the promising search space. The vanilla genetic algorithm is generally inefficient in mining effective formulaic alphas, due to the fact that effective alphas are sparse in the huge search space. Therefore, how to quickly locate the promising space for search becomes a critical issue.
+
+Challenge 2: Guide the search away from the explored search space. In order to find many diverse and effective formulaic alphas, we need to run the genetic algorithm several times for more results. However, the vanilla genetic algorithm usually converges to the same local minima.
+
+Challenge 3: Prevent the premature convergence problem. The premature convergence problem [Gupta and Ghafir, 2012] arises in genetic algorithms when some type of effective genes dominate the whole population and destroy the diversity in the population. When premature convergence happens, the population stucks at a suboptimal state and we can no longer produce offspring with higher performance.
+
+In this paper, we propose a new model called AutoAlpha to address the above challenges in a unified framework. The technical contributions of this paper can be summarized as follows:
+
+- We discover an inherent pattern of the formulaic alphas. Based on this, we design a hierarchical structure to quickly locate the promising space for search, which address Challenge 1.
+- For Challenge 2, we propose a new Quality Diversity method based on the Principal Component Analysis (PCA) to guide the search away from the explored space for more diverse and effective formulaic alphas.
+- We introduce the warm start method at the initialization step and the replacement method during reproduction to prevent the premature convergence problem. This addresses Challenge 3.
+
+Based on the formulaic alphas we discover, we propose an ensemble learning-to-rank model to predict the stocks rankings and develop effective stock trading strategies. We perform backtests in the Chinese stock market for different holding periods. The backtesting results show that our method consistently outperforms several baselines and the market index.
+
+2 Problem Statement
+
+Mining formulaic alphas can be regarded as a feature extraction problem. We start from an initial set of basic factors (e.g. open, close, volume, etc.) and operators (e.g. +-s/, min, std, etc.), and then build formulaic alphas that satisfy certain performance measurement criterion, in order to reveal some inherent patterns of the stock market. The basic factors and the operators we use can be found in [Kakushadze, 2016]. The data is public in Chinese stock markets and can be accessed through multiple resources³. In this section, we formalize the problem of mining formulaic alphas.
+
+2.1 Stock Returns
+
+The return of a stock is generally determined by the close price of the stock and the holding period. For a given stock s, a given date t and a given holding period h, the return of the stock can be calculated as:
+
+\[ r_{t,s}^{(h)} = \frac{close_{t+h,s} - close_{t

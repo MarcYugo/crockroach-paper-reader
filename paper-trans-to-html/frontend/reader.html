@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阅读论文</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- 首屏先把主题套上：等 CSS/JS 加载完再切会闪一下白 -->
+  <script>try{if(localStorage.getItem("paperReader.theme")==="dark")document.documentElement.classList.add("dark");}catch(e){}</script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./">← 论文列表</a>
+    <h1 class="doc-title" id="docTitle">加载中…</h1>
+    <span class="share-badge" id="shareBadge" hidden></span>
+    <div class="top-actions">
+      <label class="chk"><input type="checkbox" id="chkShowZh"> 显示译文</label>
+      <label class="chk"><input type="checkbox" id="chkShowNotes" checked> 显示笔记</label>
+      <button class="btn" id="btnPageTrans" title="翻译当前页全部英文段落">翻译本页</button>
+      <button class="btn" id="btnAllTrans" title="翻译全文(批量可取消)">翻译全文</button>
+      <button class="btn ghost" id="btnFinished">标记读完</button>
+      <span class="icon-btn" id="zoomOut" title="缩小">−</span>
+      <span class="chk" id="zoomVal" style="min-width:40px;justify-content:center">100%</span>
+      <button class="icon-btn" id="zoomIn" title="放大">＋</button>
+      <button class="btn ghost" id="btnShare" hidden
+              title="把这篇论文（连同笔记/高亮/译文/AI 整理）共享给别的账号">🔗 共享</button>
+      <button class="btn ghost" id="btnToc" title="目录：优先用 PDF 自带书签，没有就让 LLM 从全文提取">📑 目录</button>
+      <button class="btn ghost" id="btnReparse"
+              title="用这篇论文的原始 PDF 重新解析版式（解析器升级/换了 OCR 后端后用；笔记、高亮、译文、进度都保留）">🔄 重解析</button>
+      <input type="file" id="reparseFile" accept="application/pdf,.pdf" hidden>
+      <button class="btn primary" id="btnNotes">📝 笔记 <span id="notesCount">0</span></button>
+    </div>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+  <div class="trans-progress" id="transProgress" hidden>
+    <div class="bar"><i id="tpBar"></i></div>
+    <span id="tpText">0 / 0</span>
+    <button class="cancel" id="tpCancel">取消</button>
+  </div>
+
+  <main class="reader-main" id="readerMain">
+    <div class="pages" id="pages"></div>
+
+    <!-- 页码：点数字→输页号→回车跳转（Esc 取消） -->
+    <div class="pageind" id="pageInd" title="输入页码后按回车跳转 （Esc 取消）">
+      <input class="pagein" id="pageIn" type="text" inputmode="numeric" maxlength="4"
+             autocomplete="off" aria-label="输入页码跳转" placeholder="-">
+      <span class="psep">/</span>
+      <b id="pageTotal">-</b>
+    </div>
+  </main>
+
+  <!-- 文末 · AI 辅助阅读：左边聊思路，右边是笔记整理（读到 ≥95% 自动整理一次）。
+       放在 .reader-main 之外：它不需要为右侧批注栏留白，否则整理框会被挤得很窄。 -->
+  <section class="ai-end" id="aiEnd">
+    <div class="ai-in">
+      <div class="ai-head">
+        <b><i class="ai-mark" aria-hidden="true"></i>AI 辅助阅读</b>
+        <span class="ai-sub" id="aiSub"></span>
+        <span class="grow"></span>
+        <button class="btn ghost" id="aiRegen" type="button" title="按当前笔记重新整理一次">重新整理</button>
+        <button class="btn ghost" id="aiClear" type="button" title="只清掉对话，整理结果保留">清空对话</button>
+      </div>
+      <div class="ai-body" id="aiBody">
+        <div class="ai-chat" id="aiChat">
+          <div class="ai-msgs" id="aiMsgs"></div>
+          <div class="ai-send">
+            <textarea id="aiText" rows="2" spellcheck="false"
+                      placeholder="就这篇论文或你的笔记提问（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button class="btn primary" id="aiSend" type="button">发送</button>
+          </div>
+        </div>
+        <div class="ai-sum" id="aiSum"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 左侧目录：PDF 自带书签直接用；没有书签时可用 LLM 读全文提取 -->
+  <aside class="toc-panel" id="tocPanel">
+    <div class="sp-head">
+      <b>📑 目录</b>
+      <span class="cnt" id="tocCount"></span>
+      <button class="sp-close" id="tocClose" title="收起">×</button>
+    </div>
+    <div class="toc-list" id="tocList"></div>
+
+    <!-- 目录旁的独立一块：AI 辅助阅读（靠分隔线隔开，与目录内容不是一个整体） -->
+    <div class="toc-ai" id="tocAi">
+      <div class="toc-ai-head">
+        <b><i class="ai-mark" aria-hidden="true"></i>AI 辅助阅读</b>
+        <span class="cnt" id="tocAiState"></span>
+      </div>
+      <div class="toc-ai-list" id="tocAiList"></div>
+      <button class="toc-ai-go" id="tocAiGo" type="button">去文末看整理 / 聊一聊 →</button>
+    </div>
+
+    <div class="toc-foot" id="tocFoot"></div>
+  </aside>
+
+  <!-- 右侧“全部笔记”总览（笔记正文内嵌在正文句下方，这里只做一览/定位） -->
+  <aside class="side-panel" id="side">
+    <div class="sp-head">
+      <b>📝 全部笔记</b>
+      <span class="cnt" id="spCount"></span>
+      <button class="sp-close" id="closeSide" title="收起">×</button>
+    </div>
+    <div class="sp-list" id="spList"></div>
+  </aside>
+
+  <!-- 选中句子后的浮动工具条（不显示选中内容预览，只放操作按钮） -->
+  <div class="fbar" id="fbar" hidden>
+    <button data-a="trans" id="fbTrans">翻译</button>
+    <span class="sep"></span>
+    <button data-a="hl" id="fbHl">标注</button>
+    <button data-a="note" id="fbNote">笔记</button>
+    <button data-a="copy" id="fbCopy">复制</button>
+    <span class="sep"></span>
+    <button data-a="close" id="fbClose" style="color:#9fb0c8">✕</button>
+    <div class="hmenu" id="hmenu">
+      <!-- 6 个色块由 JS 按调色盘渲染（前 3 个默认，后 3 个可自定义） -->
+      <div class="swatches"></div>
+      <div class="swedit">
+        <span class="lbl">自定义</span>
+        <input type="color" title="自定义颜色 1">
+        <input type="color" title="自定义颜色 2">
+        <input type="color" title="自定义颜色 3">
+      </div>
+      <button data-a="hlclear">清除高亮</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <script src="js/common.js"></script>
+  <script src="js/r2-nav.js"></script>
+  <script src="js/r2-math.js"></script>
+  <script src="js/r2-notes.js"></script>
+  <script src="js/r2-ai.js"></script>
+  <script src="js/reader2.js"></script>
+</body>
+</html>

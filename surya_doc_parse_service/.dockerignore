@@ -1,0 +1,11 @@
+# 构建上下文里排除的内容
+.git
+.gitignore
+__pycache__
+*.pyc
+results/
+*.json
+.DS_Store
+
+# 权重不进镜像也不进构建上下文(运行时用 -v 挂载到 /app/checkpoints)
+checkpoints/

@@ -1,0 +1,34 @@
+# ---- 依赖源 ----
+# PyTorch 官方 CPU 索引：下面锁定的 torch/torchvision `+cpu` 版本要从这里取。
+# 注意：requirements 文件里的 index 选项是**全局**的，对本文件所有包生效。
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+httpx>=0.27
+PyMuPDF>=1.24
+# 数据存储：论文/标注/笔记/译文/账号/LLM 配置都存在 MongoDB（见 mongo_configuration/）
+pymongo==4.18.0
+# 可选：未配置 DeepSeek Key 时，可安装此包作为免费兜底翻译源
+# deep-translator>=1.11
+
+# ---- 可选：PDF 解析走 Surya 2 推理服务(版面分析 / 整页 OCR) ----
+# 先用 doc_parse_service/ 把推理服务跑起来(默认 http://127.0.0.1:8060/v1)，
+# 再安装下面这些客户端依赖；不装则自动回退到本地 PyMuPDF 解析。
+#
+# ⚠️ 为什么要把 torch/torchvision 显式写在 surya-ocr 前面并锁死：
+#   surya-ocr 依赖 torch，但直接 `pip install surya-ocr` 时 pip 会从 PyPI 拉
+#   **CUDA 版** torch（单轮子 554MB，还会带一堆 nvidia-* 依赖，多占 2GB+），
+#   本机/容器根本没有 GPU，纯浪费。所以先把 CPU 版钉死：
+#     1) 上面的 --extra-index-url 提供 CPU 索引；
+#     2) 版本必须带 `+cpu` 本地标签 —— PyPI 上没有 2.14.0+cpu，
+#        只有 CPU 索引的候选能满足，不会被 PyPI 上更新的 CUDA 版顶掉；
+#     3) torch 2.14.0 ↔ torchvision 0.29.0 是官方配套版本（与 doc_parse_service
+#        服务端装的一致）；torchvision 元数据要求 torch==2.14.0，正好匹配。
+#  gpu 设备推理的话把cpu版本的torch和torchvision 注释掉
+# torch==2.14.0+cpu
+# torchvision==0.29.0+cpu
+
+surya-ocr>=0.22
+Pillow>=10

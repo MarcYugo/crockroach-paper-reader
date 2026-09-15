@@ -1,0 +1,265 @@
+/* ============ 滚动/页码导航、目录(TOC)、阅读进度、缩放：从 reader2.js 拆出来的独立模块 ============
+   与 r2-math.js / r2-ai.js 同一套路：整段**按原样搬过来**（缩进没动，方便对照），
+   改动只有三处：
+     ① `META` → `env.META`（let，换论文会整体替换；段内只读它的属性、不做绑定赋值，
+        所以给 getter 就够，属性赋值仍作用在同一个对象上）；
+     ② `zoomIdx` → `env.zoomIdx`（let，且段内**会赋值** → env 里同时给 getter 和 setter）；
+     ③ `saveTimer`（原来声明在 reader2.js 顶层）**整个搬进本模块** —— 它只被
+        scheduleSave() 用，外面没有任何引用，所以不需要再跨模块暴露。
+
+   装配（reader2.js 原位置）：
+     const { currentPageIndex, updatePageInd, … } = R2Nav({ … });
+     `canWrite` / `maybeAutoSummarize` 声明在**本段之后**（共享权限段 / AI 段装配处），
+     装配这一刻还在 TDZ → 包一层转发，调用时才去读。
+
+   对外接口在文件末尾的 return，共 8 项。
+   ============================================================================ */
+window.R2Nav = function (env) {
+  "use strict";
+  const { $, pages, docId, CSS_W, vpH, ZOOMS, pagesEl, ZOOM, GZ, toScrollDelta,
+          relayoutAll, applyZoom, pageAnchor, render, canWrite, maybeAutoSummarize } = env;
+
+  let saveTimer = null;        // 进度保存防抖（原来是 reader2.js 顶层的 let，随本段一起搬来）
+
+  /* ================= 滚动 / 页码 / 进度 ================= */
+  function currentPageIndex() {
+    const mid = vpH() * 0.45;
+    let best = 0;
+    for (let i = 0; i < pages.length; i++) {
+      const r = pages[i].el.getBoundingClientRect();
+      if (r.top <= mid) best = i;
+    }
+    return best;
+  }
+  function updatePageInd() {
+    const si = $("pageIn");
+    // 正在输入页号时不要被滚动事件覆盖掉
+    if (si && document.activeElement !== si) si.value = currentPageIndex() + 1;
+    const tot = $("pageTotal");
+    if (tot) tot.textContent = pages.length + " 页";
+    syncTocActive();          // 目录里跟着高亮当前所在小节
+  }
+  function scrollToPage(i, mode) {
+    const r = pages[i].el.getBoundingClientRect();
+    window.scrollBy({ top: toScrollDelta(r.top - 70), behavior: mode === "instant" ? "auto" : "smooth" });
+  }
+  /* ---- 页码跳转：底部“1 / 12 页”里直接输入页号回车 ---- */
+  function jumpToPage(raw) {
+    const total = pages.length;
+    if (!total) return;
+    const n = parseInt(String(raw).replace(/\D/g, ""), 10);
+    if (!n || isNaN(n)) { updatePageInd(); return; }
+    if (n < 1 || n > total) {
+      toast("页码超出范围：本文共 " + total + " 页");
+      updatePageInd();
+      return;
+    }
+    scrollToPage(n - 1, "instant");   // 跳页用即时滚动，数字不会一路乱跳
+    updatePageInd();
+    toast("已跳到第 " + n + " 页");
+  }
+  function bindPageJump() {
+    const si = $("pageIn");
+    if (!si) return;
+    si.addEventListener("focus", () => si.select());     // 聚焦即全选，直接输新页号
+    si.addEventListener("click", () => si.select());      // 单击也要全选：鼠标抬起会把 focus 里的全选取消掉
+    si.addEventListener("input", () => { si.value = si.value.replace(/\D/g, ""); });
+    si.addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const v = si.value;
+        si.blur();                                       // 先失焦再跳，blur 里的复位不会盖掉结果
+        jumpToPage(v);
+      } else if (e.key === "Escape") {
+        si.value = currentPageIndex() + 1;
+        si.blur();
+      }
+    });
+    si.addEventListener("blur", () => updatePageInd());
+  }
+  bindPageJump();
+
+  /* ================= 左侧目录（PDF 书签 / LLM 从全文提取） =================
+     建论文时就把 PDF 自带书签存进记录里（`toc_source="pdf"`），有就用现成的；
+     没有书签时，第一次展开面板会让 LLM 读全文排一份（结果也存库，不重复花 token）。 */
+  const TOC_W = 300;                  // 与 style.css 里 body.toc-open 的 padding-left 一致
+  let tocItems = [], tocSource = "", tocLoaded = false, tocBusy = false;
+
+  function tocPanelOpen() {
+    const p = $("tocPanel");
+    return !!(p && p.classList.contains("open"));
+  }
+
+  function syncTocActive() {
+    const list = $("tocList");
+    if (!list || !tocItems.length) return;
+    const cur = currentPageIndex() + 1;
+    let idx = -1;                                  // 当前所在小节 = 最后一个 page <= 当前页
+    for (let i = 0; i < tocItems.length; i++) {
+      if (tocItems[i].page && tocItems[i].page <= cur) idx = i;
+    }
+    list.querySelectorAll(".toc-item").forEach((n, i) => n.classList.toggle("cur", i === idx));
+  }
+
+  function renderToc() {
+    const list = $("tocList"), foot = $("tocFoot");
+    if (!list) return;
+    list.textContent = "";
+    $("tocCount").textContent = tocItems.length ? tocItems.length + " 条" : "";
+
+    if (tocBusy) {
+      const d = el("div", "toc-empty");
+      d.innerHTML = '<div class="big">⏳</div>正在用 LLM 读全文提取目录…<br><span style="font-size:12px">首次提取通常要十几秒</span>';
+      list.appendChild(d);
+      if (foot) foot.textContent = "";
+      return;
+    }
+    if (!tocItems.length) {
+      const d = el("div", "toc-empty");
+      d.innerHTML = '<div class="big">📑</div>这份 PDF 没有自带书签。<br>可以让 LLM 读全文排一份目录。';
+      list.appendChild(d);
+    } else {
+      for (const it of tocItems) {
+        const b = el("button", "toc-item lv" + clamp(it.level || 1, 1, 4));
+        b.type = "button";
+        b.appendChild(el("span", "tt", it.title || ""));
+        if (it.page) b.appendChild(el("span", "tp", "P" + it.page));
+        b.title = (it.page ? "第 " + it.page + " 页 · " : "") + (it.title || "");
+        b.addEventListener("click", () => { if (it.page) jumpToPage(it.page); });
+        list.appendChild(b);
+      }
+    }
+
+    if (foot) {
+      foot.textContent = "";
+      foot.appendChild(el("span", "", tocSource === "pdf" ? "来自 PDF 书签"
+                                        : tocSource === "llm" ? "LLM 提取" : "暂无来源"));
+      const btn = el("button", "", tocItems.length ? "重新提取" : "用 LLM 提取");
+      btn.addEventListener("click", () => buildToc(true));
+      foot.appendChild(btn);
+    }
+    syncTocActive();
+  }
+
+  async function loadToc() {
+    try {
+      const r = await api("/api/doc/" + docId + "/toc");
+      tocItems = (r && r.items) || [];
+      tocSource = (r && r.source) || "";
+    } catch (e) { tocItems = []; tocSource = ""; }
+    tocLoaded = true;
+    renderToc();
+    return tocItems.length;
+  }
+
+  async function buildToc(force) {
+    if (tocBusy) return;
+    if (!canWrite()) {                       // 目录存在记录里、大家共用 → 需要写权限
+      showNotice("提取目录需要写权限：这是只读共享的论文，只能看已有的目录。", true);
+      return;
+    }
+    tocBusy = true;
+    renderToc();
+    try {
+      const r = await api("/api/doc/" + docId + "/toc",
+                          { method: "POST", json: { force: !!force } });
+      tocItems = (r && r.items) || [];
+      tocSource = (r && r.source) || "llm";
+      toast("目录已生成：" + tocItems.length + " 条");
+    } catch (err) {
+      showNotice("提取目录失败：" + err.message, true);
+    } finally {
+      tocBusy = false;
+      renderToc();
+    }
+  }
+
+  function openToc() {
+    $("tocPanel").classList.add("open");
+    document.body.classList.add("toc-open");
+    relayoutAll();                                  // 给页面让出左侧空间
+    renderToc();
+    if (!tocLoaded) {
+      loadToc().then(n => { if (!n) buildToc(false); });
+    } else if (!tocItems.length && !tocBusy) {
+      buildToc(false);
+    }
+  }
+  function closeToc() {
+    $("tocPanel").classList.remove("open");
+    document.body.classList.remove("toc-open");
+    relayoutAll();
+  }
+  $("btnToc").addEventListener("click", () => { tocPanelOpen() ? closeToc() : openToc(); });
+  $("tocClose").addEventListener("click", closeToc);
+  function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveProgress, 800); }
+  /* 阅读完成度：只按**正文页面**算。
+     文末还有 AI 面板，若用整页 scrollHeight 会把它的高度也算进去 —— 同样读到文末，
+     进度反而变小（连带“读完自动标记”和“95% 自动整理笔记”都难以触发）。 */
+  function readRatio() {
+    const r = pagesEl.getBoundingClientRect();
+    const h = r.height || 1;
+    return clamp((vpH() * 0.5 - r.top) / h, 0, 1);
+  }
+  async function saveProgress() {
+    if (!env.META) return;
+    const ratio = readRatio();
+    const pi = currentPageIndex();
+    let status = env.META.status === "unread" ? "reading" : env.META.status;
+    if (ratio > 0.985) status = "done";
+    env.META.progress = Math.max(env.META.progress || 0, ratio);
+    env.META.last_page = Math.max(env.META.last_page || 0, pi + 1);
+    maybeAutoSummarize();          // 读到 ≥95% 且还没整理过 → 自动整理笔记
+    try {
+      const r = await api(`/api/doc/${docId}/progress`, {
+        method: "POST",
+        json: { last_page: env.META.last_page, progress: env.META.progress, status },
+      });
+      if (r) { env.META.status = r.status; updateFinishBtn(); }
+    } catch (e) { /* ignore */ }
+  }
+  function updateFinishBtn() {
+    // META 还没到（首屏、或缺 ?id=）时按“未标记”显示，不抛错
+    $("btnFinished").textContent = (env.META && env.META.status === "done") ? "已完成 ✓" : "标记读完";
+  }
+  $("btnFinished").addEventListener("click", async () => {
+    if (!env.META) return;         // 没有可标记的文档（还没加载好）
+    const status = env.META.status === "done" ? "reading" : "done";
+    await api(`/api/doc/${docId}/progress`, {
+      method: "POST", json: { status, progress: status === "done" ? 1 : env.META.progress, last_page: env.META.last_page || pages.length },
+    });
+    env.META.status = status;
+    updateFinishBtn();
+    toast(status === "done" ? "🎉 标记为已读完" : "已改为在读");
+  });
+
+  /* ================= 缩放 ================= */
+  $("zoomOut").addEventListener("click", () => changeZoom(-1));
+  $("zoomIn").addEventListener("click", () => changeZoom(1));
+  function changeZoom(d) {
+    const ni = clamp(env.zoomIdx + d, 0, ZOOMS.length - 1);
+    if (ni === env.zoomIdx) return;
+    // 先按旧缩放记下“正在看的这处内容”，换完缩放再按同一处还原滚动位置
+    // （整体缩放只改视觉比例，元素布局坐标不变，不这样做会跳到别处）
+    const anchor = pageAnchor();
+    env.zoomIdx = ni;
+    applyZoom();
+    render(anchor);
+  }
+  function refreshZoomLabel() {
+    // 右侧留出批注栏时页面会等比缩小(fit)，这里显示**实际**渲染比例，避免和看到的不一致
+    const pg = pages[0];
+    const pct = pg ? Math.round(pg.w * GZ() / CSS_W * 100) : Math.round(ZOOM() * 100);
+    $("zoomVal").textContent = pct + "%";
+    const capped = pg && pg.w < CSS_W - 1;
+    $("zoomVal").title = capped
+      ? "窗口宽度要留出侧栏（目录 / 笔记栏），页面已自动适宽；想放大请加宽窗口或收起侧栏"
+      : "当前缩放比例";
+  }
+
+  /* ============ 对外接口 ============ */
+  return {
+    currentPageIndex, updatePageInd, scrollToPage, TOC_W, tocPanelOpen,
+    scheduleSave, updateFinishBtn, refreshZoomLabel,
+  };
+};

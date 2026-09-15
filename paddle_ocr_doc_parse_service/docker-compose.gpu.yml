@@ -1,0 +1,128 @@
+# ============================================================
+#  PaddleOCR-VL-1.6 推理服务 (vLLM) —— GPU 覆盖文件
+#
+#  用法(与基础文件叠加, 顺序不能反):
+#     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+#  说明: 与基础文件的差异只有四处
+#    1) 基础镜像换成 CUDA 版 vLLM 镜像(vllm/vllm-openai), 即 GPU 加速版;
+#    2) command 里 --dtype 默认改成 float16(见下方 ③), 并加 --gpu-memory-utilization;
+#    3) 用 deploy.resources 给容器分配全部 NVIDIA GPU;
+#    4) 多一个 VLLM_ENABLE_CUDA_COMPATIBILITY 开关(默认关)。
+#  端口/挂载/restart 等仍由 docker-compose.yml 提供。
+#
+#  前置条件:
+#    - 宿主机装好 NVIDIA 驱动(nvidia-smi 可用);
+#    - 装好 nvidia-container-toolkit 并注册 nvidia runtime, 否则启动报
+#        Error response from daemon: could not select device driver "nvidia" with capabilities: [[gpu]]
+#      检查: `docker info | grep -i runtimes` 必须能看到 nvidia(只有 runc 就是没配)。
+#      修复: apt-get install -y nvidia-container-toolkit
+#            nvidia-ctk runtime configure --runtime=docker
+#            systemctl restart docker     (WSL 无 systemd 时: service docker restart)
+#      自检: docker run --rm --gpus all nvidia/cuda:12.2.2-base-ubuntu22.04 nvidia-smi
+#    - WSL2: 显卡驱动只装 Windows 端, 不要在 WSL 里装 Linux 版 NVIDIA 驱动。
+#
+#  ---- 可调项(放在 .env / shell 环境变量里, 与基础文件共用) ----
+#     GPU_BASE_IMAGE=vllm/vllm-openai:v0.29.0-cu129
+#         默认**必须**选 CUDA 12.x 的变体(-cu129), 原因见下面 ④。
+#         切勿用 :latest —— 它现在已经升到 CUDA 13.0, 需要 R580+ 驱动。
+#     VLLM_DTYPE=float16      精度: 见 ③
+#     GPU_MEMORY_UTILIZATION=0.90   单卡显存占用比例上限
+#     VLLM_ENABLE_CUDA_COMPATIBILITY=0   见 ②
+#
+#  ---------------- 四个必须知道的坑 ----------------
+#
+#  ① 报 804 时先怀疑 cuda-compat, 别只盯着 CUDA 版本(本项目栽过两次)。
+#     vLLM 官方镜像自带 /usr/local/cuda/compat(更新版本的驱动库, 如 580.95),
+#     NVIDIA container runtime 启动容器时会**自动**把它挂进库路径 —— 它既不看
+#     VLLM_ENABLE_CUDA_COMPATIBILITY(vLLM 自己的开关, 默认 0), 也不受
+#     NVIDIA_REQUIRE_CUDA 里 GeForce 不匹配的影响。结果就是在 GeForce 上强行
+#     前向兼容, 必然报
+#       Error 804: forward compatibility was attempted on non supported HW
+#     这个错和"镜像 CUDA 是 13.0 还是 12.9"无关 —— 换镜像版本治不好。
+#     判别: 容器内 `nvidia-smi` 的 "CUDA Version" 若显示 compat 库版本(如 13.0)
+#           而不是宿主机驱动上限(535 -> 12.2), 就已中招。
+#     修法: 构建时 rm -rf /usr/local/cuda/compat(已在 Dockerfile 里做了)。
+#
+#     顺带记住 NVIDIA 的版本规则(只有 12.x 有 minor version compatibility):
+#       CUDA 12.x 应用 -> 驱动 >= 525 可跑(可跨 12.y 小版本)
+#       CUDA 13.x 应用 -> 驱动必须 >= 580
+#     vLLM 官方同一版本有两种变体(默认 tag 是新的 CUDA):
+#       vllm/vllm-openai:v0.29.0          -> CUDA 13.0, 需要驱动 >= 580
+#       vllm/vllm-openai:v0.29.0-cu129    -> CUDA 12.9, 驱动 >= 525 即可
+#     查镜像自带哪个 CUDA: docker run --rm --entrypoint env <镜像> | grep CUDA_VERSION
+#
+#  ② 容器有没有真的拿到 GPU, 别靠"客户端 CPU 占用"猜:
+#       docker exec paddleocr-vl-vllm nvidia-smi -L
+#     失败 = 没分到 GPU; vLLM 启动日志里看 "CUDA" / 显存占用也很快能判断。
+#
+#  ③ 精度: 模型权重是 bfloat16, 但 bf16 只有 Ampere(sm_80)及以上支持。
+#     图灵/20 系卡(sm_75, 如 RTX 2080 Ti / T4)必须用 float16, 否则启动即报
+#       Bfloat16 is only supported on GPUs with compute capability of at least 8.0
+#     所以这里 --dtype 默认 float16; A100/30 系/40 系/H100 想要原生 bf16,
+#     在 .env 里设 VLLM_DTYPE=bfloat16。
+#
+#  ④ 本机实测环境(改这里之前先对一遍):
+#       GPU       : RTX 3080 10GB  (sm_86, Ampere -> 支持 bf16)
+#       nvidia-smi: 驱动 535.129.03, CUDA Version 12.2
+#       要让服务起来需要三件事同时满足:
+#         a. 镜像用 CUDA 12.x 变体(-cu129)            —— 见 ①
+#         b. Dockerfile 里删掉 cuda-compat            —— 见 ①(只做 a 仍报 804)
+#         c. 关掉/绕开运行期 PTX JIT                  —— 见下面的 TORCH_CUDA_ARCH_LIST
+#                                                       与 VLLM_USE_FLASHINFER_SAMPLER
+#       实测(2026-09-14): 三条都做到后 /health 就绪, /v1/chat/completions 正常,
+#       GPU 占用约 9.2GB/10GB。
+#
+#  提示: Compose >= 2.30 也可以不用 deploy 段, 直接写 `gpus: all`;
+#        只想用某一张卡: 把下面 count: all 换成 device_ids: ["0"]。
+# ============================================================
+
+services:
+  paddleocr-vl-vllm:
+    build:
+      context: .
+      args:
+        # GPU 版基础镜像: 官方 CUDA 版 vLLM 镜像(自带 sass/PTX 与 CUDA 运行库)
+        # ⚠ 用 CUDA 12.x 的 -cu129 变体, 且 Dockerfile 里会删掉它的 cuda-compat
+        #   目录 —— 两者都必要, 详见文件头 ①/④。勿改回 :latest(CUDA 13.0)。
+        BASE_IMAGE: "${GPU_BASE_IMAGE:-vllm/vllm-openai:v0.29.0-cu129}"
+    image: paddleocr-vl-vllm:gpu
+    environment:
+      # 保持 0(关闭)。镜像里的 cuda-compat 已由 Dockerfile 删除, 这个开关在
+      # GeForce 上本来就无效(只对专业卡/数据中心卡生效), 不要设成 1。
+      VLLM_ENABLE_CUDA_COMPATIBILITY: "${VLLM_ENABLE_CUDA_COMPATIBILITY:-0}"
+      # ---- 驱动 535 + cu129 镜像的第二道坎: 运行期 JIT 编译 ----
+      # 镜像里的 nvcc 是 CUDA 12.9, 它生成的 PTX ISA 是 8.8; 而驱动 535 的
+      # PTX JIT 只认到 PTX ISA 8.1(CUDA 12.2)。minor version compatibility
+      # 明确不覆盖 PTX JIT —— 于是运行期现编的 kernel 一加载就报
+      #   device kernel image is invalid (CUDA error 209)
+      # 解法: 让 JIT 只针对本卡架构产出 SASS(不依赖 PTX JIT)。
+      #   本机 sm_86 = 8.6。换卡时把这里改成对应值(如 7.5 / 8.9 / 12.0)。
+      TORCH_CUDA_ARCH_LIST: "${TORCH_CUDA_ARCH_LIST:-8.6}"
+      # flashinfer 的 top-k/top-p 采样 kernel 也是运行期 JIT 的, 同样会踩上面
+      # 那个坑。关掉它, 退回 vLLM 自带的 torch 采样实现(结果一致, 略慢一点)。
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
+    # GPU 版启动参数(会覆盖基础文件里的 command)。
+    # 相比 CPU 版的差异: --dtype 默认 float16、多了 --gpu-memory-utilization、
+    # 去掉 CPU 专用参数。
+    command: >
+      --model /models/PaddleOCR-VL-1.6
+      --served-model-name PaddleOCR-VL-1.6-0.9B PaddleOCR-VL-0.9B
+      --trust-remote-code
+      --host 0.0.0.0
+      --port ${SERVE_PORT:-8080}
+      --dtype ${VLLM_DTYPE:-float16}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.90}
+      --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS:-16384}
+      --max-model-len ${MAX_MODEL_LEN:-32768}
+      --no-enable-prefix-caching
+      --mm-processor-cache-gb 0
+    # 把宿主机全部 NVIDIA GPU 分配给容器。
+    # 前提是 nvidia-container-toolkit 已装好并注册了 nvidia runtime(见文件头)。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,1 @@
+modelscope download --model "PaddlePaddle/PaddleOCR-VL-1.6" --local_dir "./checkpoints/PaddleOCR-VL-1.6"

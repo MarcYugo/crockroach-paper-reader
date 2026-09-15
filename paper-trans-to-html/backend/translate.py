@@ -1,0 +1,438 @@
+"""译文服务：英文段落 → 简体中文。
+
+后端优先走 **OpenAI 兼容的 chat/completions**(DeepSeek / OpenAI / 自建中转都行，
+批量 + JSON 输出)，未配置 Key 时若安装了 deep-translator 则退化为免费 Google 翻译；
+两者都不可用时 `ready=False`，前端会给出配置提示。
+
+配置项(见 `settings.py` 的优先级说明)：
+  backend/provider 服务类型(deepseek/openai/anthropic/custom/google)
+  base_url         服务地址，如 https://api.deepseek.com
+  api_key          密钥(必需，缺失则退化 Google)
+  model            模型名
+
+网页里首次登录填写的配置存在 `data/llm.json`，优先于环境变量与 config.json。
+"""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Iterable, Iterator
+
+import httpx
+
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]")
+_JUNK = re.compile(r"^[\s\d\W_]*$", re.UNICODE)  # 纯数字/标点/空白
+
+
+def looks_chinese(text: str) -> bool:
+    if not text:
+        return False
+    n = len(_CJK.findall(text))
+    return n > 0 and n / max(len(text), 1) > 0.12
+
+
+def needs_translation(text: str) -> bool:
+    """这段文本**需不需要**送去翻译。
+
+    不需要的三种：空/极短、纯数字标点符号、本来就是中文。
+    接口层要靠它区分两种“没有译文”：
+      - 不需要翻译 → 可以打上“无需翻译”的标记，以后不用再试；
+      - 需要但没拿到（服务少返/返回空）→ 只是这次失败，**必须可重试**。
+    """
+    t = (text or "").strip()
+    if not t or len(t) < 2 or _JUNK.fullmatch(t):
+        return False
+    return not looks_chinese(t)
+
+
+_PROMPT = (
+    "你是一名严谨的学术论文翻译助手，负责把英文翻译成简体中文。\n"
+    "规则：\n"
+    "1. 忠实原文、术语准确、语句通顺，保持原有段落结构。\n"
+    "2. 数字、公式、LaTeX、变量名、引用标记、URL 等原样保留。\n"
+    "3. 只做翻译，不要添加解释或额外说明。\n"
+    "用户会发送一个 JSON 对象：{\"texts\": [\"英文段落1\", \"英文段落2\", ...]}。\n"
+    "请返回一个 JSON 对象：{\"translations\": [\"译文1\", \"译文2\", ...]}，"
+    "数量与顺序必须与输入一一对应。只输出 JSON。"
+)
+
+
+class TranslationUnavailable(Exception):
+    pass
+
+
+# ---------------- 目录提取（PDF 没有自带书签时用全文让 LLM 排一份） ----------------
+_TOC_PROMPT = (
+    "你是学术论文的排版助手，任务是从论文全文里**识别章节标题并整理成目录**。\n"
+    "用户给你的文本按页给出：每一页以【第N页】开头，后面是该页的候选标题行。\n"
+    "规则：\n"
+    "1. 只输出真正的章节/小节标题（如 Abstract、1 Introduction、2.1 Method、"
+    "Experiments、References），**不要**输出正文句子、图表标题（Figure/Table 开头）、"
+    "公式编号、页眉页脚、作者与单位、参考文献条目。\n"
+    "2. 标题**保留原文语言与编号**，不要翻译、不要改写、不要加序号。\n"
+    "3. `page` 取该标题所在页的页码（按【第N页】标记），`level` 从 1 开始、子标题更深。\n"
+    "4. 按文中出现顺序输出，宁少勿多；整篇没有可识别的章节就返回空数组。\n"
+    "只输出 JSON：{\"outline\": [{\"level\": 1, \"title\": \"...\", \"page\": 1}]}"
+)
+
+
+def extract_outline(translator: "Translator", title: str, context: str,
+                    max_items: int = 120) -> list[dict]:
+    """让 LLM 从全文里提取目录，返回 `[{level, title, page}]`（已清洗/夹紧）。"""
+    user = (f"论文标题：{title or '（未知）'}\n\n"
+            f"论文正文（按页给出候选标题行）：\n{context}\n\n"
+            f"请输出目录 JSON。")
+    data = translator.chat_json(_TOC_PROMPT, user)
+    rows = data.get("outline") if isinstance(data, dict) else None
+    if isinstance(rows, dict):                       # 有的模型会包一层 {数字: {...}}
+        rows = list(rows.values())
+    if not isinstance(rows, list):
+        raise TranslationUnavailable("返回结果里没有 outline 列表，请重试")
+
+    out: list[dict] = []
+    for row in rows[:max_items]:
+        if not isinstance(row, dict):
+            continue
+        t = " ".join(str(row.get("title") or "").split())
+        if not t:
+            continue
+        try:
+            page = int(row.get("page") or 0)
+        except Exception:
+            page = 0
+        try:
+            level = int(row.get("level") or 1)
+        except Exception:
+            level = 1
+        out.append({"level": max(1, min(level, 4)), "title": t[:200], "page": max(0, page)})
+    return out
+
+
+def _extract_json(content: str):
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", content).strip()
+    try:
+        return json.loads(content)
+    except Exception:
+        m = re.search(r"\[.*\]", content, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+def _delta_text(value) -> str:
+    """`delta.content` 既可能是字符串，也可能是分片数组（有的服务这么返回）。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for p in value:
+            if isinstance(p, dict):
+                if isinstance(p.get("text"), str):
+                    parts.append(p["text"])
+            elif isinstance(p, str):
+                parts.append(p)
+        return "".join(parts)
+    return ""
+
+
+def iter_sse_deltas(lines: Iterable[str]) -> Iterator[str]:
+    """把 OpenAI 兼容的**流式**响应行解析成正文增量。
+
+    - 逐行 `data: {...}`（SSE），`data: [DONE]` 结束；
+    - 服务端忽略 `stream` 直接回整包 JSON 时也能拿到整段正文（只 yield 一次）；
+    - 空行 / 注释 / `event:` / 半截 JSON 一律跳过，不让它们打断流。
+    """
+    for raw in lines:
+        line = (raw or "").strip()
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line:
+            continue
+        if line == "[DONE]":
+            return
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue                    # 可能是不完整的一行，跳过就好
+        if not isinstance(obj, dict):
+            continue
+        choices = obj.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        ch = choices[0] if isinstance(choices[0], dict) else {}
+        delta = ch.get("delta")
+        text = _delta_text(delta.get("content")) if isinstance(delta, dict) else ""
+        if not text:
+            msg = ch.get("message")      # 非流式的整包响应
+            text = _delta_text(msg.get("content")) if isinstance(msg, dict) else ""
+        if text:
+            # 注意：`reasoning_content`(思维链) 故意丢弃，只把正文流给前端
+            yield text
+
+
+class Translator:
+    def __init__(self, config_file: Path | str | dict | None = None,
+                 overrides: dict | None = None):
+        """`config_file` 可以是配置文件路径，也可以直接是配置字典(便于叠加运行时设置)。"""
+        cfg: dict = {}
+        if isinstance(config_file, dict):
+            cfg = dict(config_file)
+        elif config_file and Path(config_file).exists():
+            try:
+                data = json.loads(Path(config_file).read_text(encoding="utf-8"))
+                cfg = data if isinstance(data, dict) else {}
+            except Exception:
+                cfg = {}
+        if overrides:
+            cfg.update(overrides)
+
+        key = (cfg.get("api_key") or cfg.get("deepseek_api_key") or "").strip()
+        self.provider = (cfg.get("backend") or cfg.get("provider") or
+                         ("deepseek" if key else "google")).strip().lower()
+        self.key = key
+        self.base = (cfg.get("base_url") or cfg.get("deepseek_base_url")
+                     or "https://api.deepseek.com").rstrip("/")
+        self.model = cfg.get("model") or cfg.get("deepseek_model") or "deepseek-chat"
+        self.timeout = float(cfg.get("timeout") or 120)
+        # 有 Key 且不是显式选 Google → 一律按 OpenAI 兼容接口调用；否则退免费兜底
+        self.backend = "google" if (self.provider == "google" or not key) else "openai"
+
+    @property
+    def provider_label(self) -> str:
+        return {"deepseek": "DeepSeek", "openai": "OpenAI",
+                "anthropic": "Anthropic (Claude)",
+                "custom": "OpenAI 兼容服务", "google": "Google(免费兜底)"}.get(
+                    self.provider, self.provider or "自定义")
+
+    @property
+    def ready(self) -> bool:
+        if self.backend == "openai" and self.key:
+            return True
+        if self.backend == "google":
+            try:
+                import deep_translator  # noqa: F401
+                return True
+            except Exception:
+                return False
+        return False
+
+    @property
+    def status_text(self) -> str:
+        if self.backend == "openai" and self.key:
+            return f"{self.provider_label} · {self.model}"
+        if self.backend == "google":
+            return "Google(免费兜底)"
+        return "未配置"
+
+    # ---------------- 批量翻译 ----------------
+    def translate(self, texts: list[str]) -> list[str]:
+        """输入与输出等长；无需翻译的项(中文/空/纯符号)原样或留空返回。"""
+        jobs: list[tuple[int, str]] = []
+        out: list[str] = [""] * len(texts)
+        for i, t in enumerate(texts):
+            t = (t or "").strip()
+            if not needs_translation(t):
+                # 无需翻译：空/极短/纯符号留空；已是中文的原样返回
+                out[i] = t if looks_chinese(t) else ""
+                continue
+            jobs.append((i, t))
+        if not jobs:
+            return out
+        if not self.ready:
+            raise TranslationUnavailable(self.status_text)
+
+        if self.backend == "google":
+            self._google(jobs, out)
+        else:
+            self._openai_compat(jobs, out)
+        return out
+
+    # ---------------- OpenAI 兼容接口(DeepSeek / OpenAI / 自建中转) ----------------
+    def _post_chat(self, body: dict) -> str:
+        """POST 一次 chat/completions，返回助手正文。"""
+        try:
+            resp = httpx.post(
+                f"{self.base}/chat/completions",
+                headers={"Authorization": f"Bearer {self.key}",
+                         "Content-Type": "application/json"},
+                json=body, timeout=self.timeout)
+        except Exception as exc:
+            raise TranslationUnavailable(f"请求翻译服务失败：{exc}") from exc
+
+        if resp.status_code != 200:
+            raise TranslationUnavailable(
+                f"翻译服务返回 {resp.status_code}：{resp.text[:200]}")
+
+        try:
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise TranslationUnavailable(f"翻译响应解析失败：{exc}") from exc
+
+    def chat_json(self, system: str, user: str, *, temperature: float = 0.1) -> dict:
+        """做一次结构化对话，返回解析出来的 JSON 对象（提取目录这类任务用）。
+
+        只有 OpenAI 兼容后端能做（Google 兑底只能逐句翻译），不能用就抱
+        `TranslationUnavailable`，前端会提示去配置 LLM。
+        """
+        if not self.ready or self.backend != "openai":
+            raise TranslationUnavailable(
+                f"当前翻译服务（{self.status_text}）不支持这类任务，"
+                f"请到「⚙ 设置 → LLM 服务」配置 OpenAI 兼容服务与 API Key")
+        content = self._post_chat({
+            "model": self.model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": temperature,
+            "response_format": {"type": "json_object"},
+        })
+        data = _extract_json(content)
+        if not isinstance(data, dict):
+            raise TranslationUnavailable("返回结果不是合法 JSON，请重试")
+        return data
+
+    def chat(self, system: str, messages: list[dict], *, temperature: float = 0.3) -> str:
+        """普通多轮对话，返回助手正文文本（AI 辅助阅读的聊天用）。
+
+        `messages` 形如 `[{"role": "user"|"assistant", "content": "..."}]`，
+        会拼在 `system` 之后。非 OpenAI 兼容后端同样抱 `TranslationUnavailable`。
+        """
+        convo = self._convo(system, messages)
+        return (self._post_chat({
+            "model": self.model,
+            "messages": convo,
+            "temperature": temperature,
+        }) or "").strip()
+
+    def _convo(self, system: str, messages: list[dict]) -> list[dict]:
+        """把 `system` + 多轮消息拼成 OpenAI 的 `messages`，顺便做能力校验。"""
+        if not self.ready or self.backend != "openai":
+            raise TranslationUnavailable(
+                f"当前翻译服务（{self.status_text}）不支持对话，"
+                f"请到「⚙ 设置 → LLM 服务」配置 OpenAI 兼容服务与 API Key")
+        convo = [{"role": "system", "content": system}]
+        for m in messages or []:
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                convo.append({"role": role, "content": content})
+        if len(convo) < 2:                       # 只有 system，没什么可答的
+            raise TranslationUnavailable("没有可发送的内容")
+        return convo
+
+    def chat_stream(self, system: str, messages: list[dict], *,
+                    temperature: float = 0.3) -> Iterator[str]:
+        """流式版 `chat()`：返回一个**逐段 yield 正文增量**的生成器。
+
+        校验（没配 Key / 不是 OpenAI 兼容后端 / 没内容）在**调用时**就抛出，
+        网络请求要等真正开始迭代才发 —— 这样接口层能先把错误变成 503，
+        而不是等头已经发出去了才发现连不上。
+        """
+        convo = self._convo(system, messages)
+        return self._stream_chat({"model": self.model, "messages": convo,
+                                  "temperature": temperature, "stream": True})
+
+    def _stream_chat(self, body: dict) -> Iterator[str]:
+        try:
+            with httpx.stream(
+                    "POST", f"{self.base}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.key}",
+                             "Content-Type": "application/json",
+                             "Accept": "text/event-stream"},
+                    json=body, timeout=self.timeout) as resp:
+                if resp.status_code != 200:
+                    detail = resp.read().decode("utf-8", "replace")[:200]
+                    raise TranslationUnavailable(
+                        f"翻译服务返回 {resp.status_code}：{detail}")
+                yield from iter_sse_deltas(resp.iter_lines())
+        except TranslationUnavailable:
+            raise
+        except Exception as exc:                     # 连接中断 / 超时 / 解码失败
+            raise TranslationUnavailable(f"请求翻译服务失败：{exc}") from exc
+
+    def _openai_compat(self, jobs: list[tuple[int, str]], out: list[str]) -> None:
+        ordered = [t for _, t in jobs]
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": _PROMPT},
+                {"role": "user", "content": json.dumps({"texts": ordered}, ensure_ascii=False)},
+            ],
+            "temperature": 0.2,
+        }
+        # Anthropic 的 OpenAI 兼容层不支持 response_format（带上会报错）；
+        # 提示词已明确要求只输出 JSON，解析端 (`_extract_json`) 也能从文本里兜住。
+        if self.provider != "anthropic":
+            body["response_format"] = {"type": "json_object"}
+        content = self._post_chat(body)
+
+        data = _extract_json(content) or {}
+        arr = data.get("translations") if isinstance(data, dict) else data
+        if isinstance(arr, list):
+            for idx, (pos, _t) in enumerate(jobs):
+                zh = arr[idx] if idx < len(arr) else ""
+                out[pos] = (zh or "").strip()
+        else:
+            raise TranslationUnavailable("翻译结果格式不符，请重试")
+
+    # ---------------- Google 兜底 ----------------
+    def _google(self, jobs: list[tuple[int, str]], out: list[str]) -> None:
+        """无需 Key，但翻译质量与稳定性都不如 LLM，仅作兜底。"""
+        try:
+            from deep_translator import GoogleTranslator
+        except Exception as exc:
+            raise TranslationUnavailable("未安装 deep-translator，无法使用免费翻译") from exc
+        tr = GoogleTranslator(source="en", target="zh-CN")
+        for pos, t in jobs:
+            try:
+                out[pos] = (tr.translate(t) or "").strip()
+            except Exception:
+                out[pos] = ""
+
+
+# =====================================================================
+#  连通性探测：给“首次登录配置 LLM”页面的「测试连接」用
+# =====================================================================
+def probe_llm(base_url: str, api_key: str, model: str, timeout: float = 30) -> str:
+    """用一次极小的 chat/completions 请求验证 地址+Key+模型 是否可用。
+
+    成功返回一句可展示的说明；失败抛 `TranslationUnavailable`，消息尽量给出可操作的原因。
+    """
+    base = (base_url or "").strip().rstrip("/")
+    key = (api_key or "").strip()
+    model = (model or "").strip()
+    if not base.startswith(("http://", "https://")):
+        raise TranslationUnavailable("服务地址需以 http:// 或 https:// 开头")
+    if not key:
+        raise TranslationUnavailable("请先填写 API Key")
+    if not model:
+        raise TranslationUnavailable("请先填写模型名")
+    try:
+        resp = httpx.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"model": model,
+                  "messages": [{"role": "user", "content": "ping"}],
+                  "max_tokens": 1},
+            timeout=timeout)
+    except Exception as exc:
+        raise TranslationUnavailable(f"无法连接 {base}：{exc}") from exc
+
+    if resp.status_code == 200:
+        return f"连接成功：{base} / {model}"
+    detail = resp.text[:300].replace("\n", " ")
+    if resp.status_code in (401, 403):
+        raise TranslationUnavailable(f"认证失败({resp.status_code})：API Key 无效或无权限。{detail}")
+    if resp.status_code == 404:
+        raise TranslationUnavailable(f"接口不存在(404)：请确认服务地址是 OpenAI 兼容根路径，"
+                                     f"当前为 {base}。{detail}")
+    if resp.status_code == 429:
+        raise TranslationUnavailable(f"触发限流(429)：Key 可用但额度/频率受限。{detail}")
+    raise TranslationUnavailable(f"服务返回 {resp.status_code}：{detail}")
