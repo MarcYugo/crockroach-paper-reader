@@ -6,5 +6,5 @@
 
 ### 2. 服务后端
 
-后端应用使用fastapi 和 marker或其他OCR模型 组成，fastapi提供路由，marker提供解析模块
+后端应用使用fastapi 和 surya-ocr，fastapi提供路由，surya-ocr提供OCR功能，解析pdf。
 
