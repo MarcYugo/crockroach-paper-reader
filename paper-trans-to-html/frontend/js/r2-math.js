@@ -9,8 +9,12 @@
    入参只放**跨模块共享**的东西，其余（KATEX_* 常量、_katexP/_katexReady、
    KATEX_EM、各种缓存）都跟着本文件走，不再污染 reader2.js 的作用域。
 
-   对外接口在文件末尾的 return，共 17 项 ——
-   其中 _katexReady 是 let（加载完会置 true），不能按值导出，故给的是 katexReady()。
+   对外接口在文件末尾的 return（原 17 项 + 页面公式框 2 项）——
+   其中 _katexReady 是 let（加载完会置 true），不能按值导出，故给的是 katexReady()；
+   `buildFormulaBoxes` / `finalizeFormulaBoxes` 是 **detection-service-group 公式框覆盖层**
+   （解析侧下发 `pages[].formula_boxes`，按 `bbox_norm × 页面显示宽高` 定位，
+   KaTeX 渲染失败时用框内裁图（base64）兜底，
+   见 `backend/pdf_parser/backend_detection_service_group.py`）。
    ============================================================================ */
 window.R2Math = function (env) {
   "use strict";
@@ -62,13 +66,18 @@ window.R2Math = function (env) {
     }).filter(Boolean);
     return Promise.all(jobs).catch(() => {});
   }
-  /* 文档里有没有需要数学排版的东西：独立公式(latex) 或 文本里的定界符 */
+  /* 文档里有没有需要数学排版的东西：detection-service-group 公式框、独立公式(latex)、
+     Surya 块的行内数学区间/表格 <math>，或文本里的数学定界符。 */
   function docNeedsMath(doc) {
-    for (const pg of ((doc && doc.pages) || []))
+    for (const pg of ((doc && doc.pages) || [])) {
+      if ((pg.formula_boxes || []).length) return true;   // 页面公式框覆盖层
       for (const t of (pg.texts || [])) {
-        if (t.latex) return true;
+        if (t.latex) return true;                         // 公式块（含 Surya kind="formula"）
+        if (t.math && t.math.length) return true;         // Surya 块：解析侧标好的行内区间
+        if (t.html && t.html.indexOf("<math") >= 0) return true;   // Surya 表格里的 <math>
         if (MATH_DELIM_RE.test(t.text || "")) return true;
       }
+    }
     return false;
   }
   /* 行内数学：把文本里的 `\(…\)` / `$$…$$` 原地换成一个 KaTeX 元素。
@@ -84,7 +93,10 @@ window.R2Math = function (env) {
       jobs.push(node);
     }
     for (const tn of jobs) {
-      if (tn.parentNode && tn.parentNode.closest && tn.parentNode.closest(".mathbox, .katex")) continue;
+      // `.md code / .md pre`：Markdown 容器（AI 面板）里的行内代码 / 代码块不换 KaTeX，
+      // 保持原样显示（普通正文里没有这两个类，行为不变）。
+      if (tn.parentNode && tn.parentNode.closest
+          && tn.parentNode.closest(".mathbox, .katex, .md code, .md pre")) continue;
       const parts = _splitInlineMath(tn.nodeValue || "");
       // ⚠️ 不能只按长度判断：**整段就是一个公式**时 parts 只有一个元素(而且是个对象)，
       // 那也是要渲染的 —— 注入出来的 `\(…\)` 常常单独占一个 run(样式与前后文不同，
@@ -95,7 +107,12 @@ window.R2Math = function (env) {
       for (const p of parts) {
         if (typeof p === "string") { frag.appendChild(document.createTextNode(p)); continue; }
         const span = document.createElement("span");
-        try { window.katex.render(p.latex, span, { displayMode: false, throwOnError: true, strict: "ignore" }); }
+        try {
+          if (!katexRender(span, p.latex, false)) {
+            frag.appendChild(document.createTextNode(p.raw));
+            continue;
+          }
+        }
         catch (e) { frag.appendChild(document.createTextNode(p.raw)); continue; }
         frag.appendChild(span);
       }
@@ -379,6 +396,7 @@ window.R2Math = function (env) {
         const S = (item.linesData[0] && item.linesData[0].runs[0] && item.linesData[0].runs[0].S) || 1;
         const box = el("div", "mathbox inline");
         box.dataset.mi = i;
+        box.dataset.latex = list[i].latex;
         box._blk = item.el;
         box._origW = wPx;
         box._ln = spans[0].closest(".ln");        // 让位时要挪的就是这一行的邻行
@@ -618,12 +636,20 @@ window.R2Math = function (env) {
   const KATEX_EM = 1.15;
   function mathSizePx(basePx) { return Math.max(1, basePx / KATEX_EM); }
 
+  function inlineTextStyle(latex) {
+    const source = String(latex || "");
+    return /^\s*\\(?:textstyle|displaystyle)\b/.test(source)
+      ? source
+      : "\\textstyle " + source;
+  }
+
   const KATEX_OPTS = { displayMode: true, throwOnError: true, strict: "ignore", trust: false };
   /* 渲染公式；成功返回 true。LaTeX 有问题就返回 false，调用方回退显示 PDF 原文字。
      display=false 时按行内样式渲染（上下限排在右上/右下）。 */
   function katexRender(box, latex, display) {
     const opts = (display === false) ? Object.assign({}, KATEX_OPTS, { displayMode: false }) : KATEX_OPTS;
-    const tt = display === false ? { latex, tag: "" } : splitTailTag(latex);
+    const source = display === false ? inlineTextStyle(latex) : latex;
+    const tt = display === false ? { latex: source, tag: "" } : splitTailTag(source);
     if (tt.tag) {
       try {
         window.katex.render(tt.latex + "\\tag{" + tt.tag + "}", box, opts);
@@ -633,7 +659,7 @@ window.R2Math = function (env) {
         box.textContent = "";            // 清掉半成品，退回原样渲染
       }
     }
-    try { window.katex.render(latex, box, opts); return true; }
+    try { window.katex.render(source, box, opts); return true; }
     catch (e2) { box.textContent = ""; return false; }
   }
 
@@ -688,12 +714,23 @@ window.R2Math = function (env) {
       const it = findItem(sb.dataset.id);
       if (it && it.latex) { writeClipboard(ev, it.latex); return; }
     }
+    const startFormula = closestFormula(range.startContainer);
+    const endFormula = closestFormula(range.endContainer);
+    if (startFormula && startFormula === endFormula && startFormula.dataset.latex) {
+      writeClipboard(ev, formulaSource(startFormula));
+      return;
+    }
 
     // ② 跨块选区：克隆后把公式逐个换回源码(没碰到公式就不插手，走浏览器默认行为)
     const holder = range.cloneContents();
+    const formulaHosts = holder.querySelectorAll(".fbox, .mathbox.inline, .blk.has-math .mathbox");
+    formulaHosts.forEach(box => {
+      if (!box.dataset.latex) return;
+      box.replaceWith(document.createTextNode(formulaSource(box)));
+    });
     const katexEls = holder.querySelectorAll(".katex");
     const mathBlks = holder.querySelectorAll(".blk.has-math");
-    if (!katexEls.length && !mathBlks.length) return;
+    if (!formulaHosts.length && !katexEls.length && !mathBlks.length) return;
     mathBlks.forEach(b => b.querySelectorAll(".ln").forEach(n => n.remove()));  // 去掉隐藏的原文字行
     katexEls.forEach(k => {
       const blk = k.closest(".blk.has-math");            // 整块公式：优先用解析出来的 latex，
@@ -713,6 +750,17 @@ window.R2Math = function (env) {
   function closestMathBlk(node) {
     const el = node && (node.nodeType === 1 ? node : node.parentElement);
     return (el && el.closest) ? el.closest(".blk.has-math") : null;
+  }
+  function closestFormula(node) {
+    const el = node && (node.nodeType === 1 ? node : node.parentElement);
+    return el && el.closest
+      ? el.closest(".fbox, .mathbox.inline, .blk.has-math .mathbox")
+      : null;
+  }
+  function formulaSource(host) {
+    const latex = host.dataset.latex || "";
+    return host.matches('.fbox[data-cls="InlineFormula"], .mathbox.inline')
+      ? "$" + latex + "$" : latex;
   }
   /* 从 KaTeX 的标注节点里取回源码；显示公式给裸 LaTeX，行内公式用 $…$ 包起来
      (行内混在正文里，不包就分不清哪段是公式)。 */
@@ -745,9 +793,10 @@ window.R2Math = function (env) {
   }
 
   /* 该文字块用什么渲染？返回 {latex} 或 null(按普通文字渲染)。
-     两个后端的公式在解析时都已统一成 `latex`：PaddleOCR 从 OCR 文本里抽，
-     Surya 从 `<math>` 里抽(Surya 的 <math> 里就是 LaTeX，不是 MathML)。
-     只认「整块就是公式」的块；正文里内联的数学交给 renderInlineMath 处理。 */
+     这是**旧数据**的兼容路径（PaddleOCR/Surya 时代把 LaTeX 挂在块上：Paddle 从 OCR
+     文本里抽、Surya 从 `<math>` 里抽）；新数据里公式是**页面级公式框**
+     （`pg.formula_boxes`，见 buildFormulaBoxes），不走这里。
+     只认「整块就是公式」的块；正文里内联的 `\(…\)` 数学交给 renderInlineMath。 */
   function mathBlockOf(t) {
     if (!t || t.kind !== "formula") return null;
     const latex = typeof t.latex === "string" ? t.latex.trim() : "";
@@ -774,6 +823,15 @@ window.R2Math = function (env) {
     }
     let best = 0, bestN = 0;
     for (const [k, n] of cnt) if (n > bestN) { bestN = n; best = k; }
+    if (!best) {                          // Surya 块：没有逐 run 字号，用解析侧估的块字号
+      const cnt2 = new Map();
+      for (const t of texts) {
+        if (t.kind === "formula" || !(t.size > 0)) continue;
+        const k = Math.round(t.size * 2) / 2;          // 0.5pt 一档，按文本长度加权
+        cnt2.set(k, (cnt2.get(k) || 0) + Math.max(1, (t.text || "").length));
+      }
+      for (const [k, n] of cnt2) if (n > bestN) { bestN = n; best = k; }
+    }
     if (!best) {                                   // 整页都是 OCR 合成行 → 退回中位数
       const all = [];
       for (const t of texts)
@@ -806,11 +864,154 @@ window.R2Math = function (env) {
     return Math.min(Math.max(own, ref * 0.8), ref * 1.25);
   }
 
+  /* ============ 页面公式框覆盖层（detection-service-group） ============
+     新版数据里公式的落地方式是「覆盖层」：解析侧把公式字形擦成等长空格
+     （位置照旧、宽度由行框反推），服务组（formula_table_service_group）返回每条
+     公式的 **bbox_norm**（归一化中心 xywh，与 YOLO 标签同口径，见 yolov13
+     `inference.py::build_detections`）与 **LaTeX**；这里按「bbox_norm × 当前页面
+     显示宽高」把 KaTeX 盖到页面上 —— 位置来自公式框、内容来自服务组。
+
+     与旧的“公式块”渲染（`mathBlockOf`，t.latex）的区别：那个是**文本块内**的公式
+     （块自带几何、覆盖层随块走）；这里是**页面级**的独立框（`pg.formula_boxes`），
+     定位与正文块无关。字号定尺与 `fitMathBox` 同一套路：先按页面正文字号渲染，
+     再等比缩放到框内（KaTeX 同字号常比原排版宽 20~40%）。 */
+  const _fboxFit = new Set();          // 待收尾/重新定尺的公式框内层
+  let _fboxFontsHooked = false;        // fonts.ready 兜底只挂一次
+
+  /* 在页面元素上建公式框覆盖层；返回新建的框数（由 render 逐页调用）。
+     `pg` 是数据里的页对象（pg.w/pg.h 为 PDF pt），`pageEl` 是该页的 .page 元素，
+     `S` 是 pt→布局 px 的换算比，`pi` 是页下标（取正文字号用）。
+
+     渲染优先级：KaTeX（latex）→ **框内裁图**（`fb.crop`，服务组回传的 base64
+     图像，KaTeX 未就绪/这条 LaTeX 渲染不出来时铺满整个框）→ LaTeX 源码文本。 */
+  function buildFormulaBoxes(pg, pageEl, S, pi) {
+    const boxes = (pg && pg.formula_boxes) || [];
+    let n = 0;
+    for (const fb of boxes) {
+      const b = fb && fb.bbox_norm;
+      const latex = String((fb && fb.latex) || "").trim();
+      const crop = String((fb && fb.crop) || "");   // 框内裁图（data URI，可空）
+      if (!b || b.length !== 4 || (!latex && !crop)) continue;
+      const w = Number(b[2]) || 0, h = Number(b[3]) || 0;
+      if (!(w > 0) || !(h > 0)) continue;          // 退化框（没尺寸）：不画
+      const isInline = fb.class_name === "InlineFormula";
+      const detectedH = h * pg.h * S;
+      const host = el("div", "fbox");
+      if (latex) host.dataset.latex = latex;
+      // bbox_norm 是**中心点** + 宽高 → 左上角 = (中心 − 半宽/半高)
+      host.style.left = ((b[0] - w / 2) * pg.w * S) + "px";
+      host.style.top = ((b[1] - h / 2) * pg.h * S) + "px";
+      host.style.width = (w * pg.w * S) + "px";
+      host.style.height = detectedH + "px";
+      if (isInline) {
+        host._formulaCenterY = b[1] * pg.h * S;
+        host._formulaDetectedH = detectedH;
+        host._formulaLineFallback = (pageBodySize(pi) || 0) * S * 1.2;
+        _inlineFormulaBoxes.add(host);
+      }
+      if (fb.class_name) host.dataset.cls = fb.class_name;
+      // ⚠️ 模块内部用 `_katexReady`；`katexReady()` 是导出给 reader2.js 的函数，这里没有
+      if (latex && _katexReady) {
+        const inner = el("div", "katex-fit");
+        if (katexRender(inner, latex, isInline ? false : undefined)) {
+          // 基准字号：页面正文字号（与正文观感一致）；实际大小由 fitFormulaBox 定尺
+          const ref = pageBodySize(pi) || 10;
+          inner.style.fontSize = mathSizePx(ref * S) + "px";
+          host.appendChild(inner);
+          _fboxFit.add(inner);
+          pageEl.appendChild(host);
+          n++;
+          continue;
+        }
+        // katexRender 失败时会把盒子清空 —— 不挂上去，继续走兜底分支
+      }
+      if (crop) {
+        // 兜底一：框内裁图（服务组按 keep_crops 回传的 base64 图像）铺满整个框
+        const img = el("img");
+        img.src = crop;
+        img.alt = latex || "formula";
+        if (latex) img.title = latex;            // 悬停看 LaTeX 源码
+        host.classList.add("cropped");
+        host.appendChild(img);
+      } else {
+        // 兜底二：没有裁图（keep_crops=false / 老数据）→ 显示 LaTeX 源码（同公式块策略）
+        const inner = el("div", "katex-fit");
+        inner.textContent = latex;
+        host.classList.add("failed");
+        host.appendChild(inner);
+      }
+      pageEl.appendChild(host);
+      n++;
+    }
+    return n;
+  }
+
+  /* 公式框收尾：页已挂到文档上 → 把每个框里的 KaTeX 等比缩到框内。
+     幂等（从基准字号重算），字体加载完再跑一遍 —— 早量会用后备字体的宽度。 */
+  function finalizeFormulaBoxes() {
+    if (!_fboxFit.size && !_inlineFormulaBoxes.size) return;
+    refitFormulaBoxes();
+    if (!_fboxFontsHooked && document.fonts && document.fonts.ready) {
+      _fboxFontsHooked = true;
+      document.fonts.ready.then(refitFormulaBoxes).catch(() => {});
+    }
+  }
+  const _inlineFormulaBoxes = new Set();
+  function refitFormulaBoxes() {
+    for (const host of [..._inlineFormulaBoxes]) {
+      if (!host.isConnected) { _inlineFormulaBoxes.delete(host); continue; }
+      fitInlineFormulaHeight(host);
+    }
+    for (const inner of [..._fboxFit]) {
+      if (!inner.isConnected) { _fboxFit.delete(inner); continue; }
+      fitFormulaBox(inner);
+    }
+  }
+  /* 以同一水平位置最近的正文行高定尺，公式框保持原中心点，避免移离原排版基线。 */
+  function fitInlineFormulaHeight(host) {
+    const page = host.closest(".page");
+    if (!page) return;
+    const box = host.getBoundingClientRect();
+    const cx = (box.left + box.right) / 2;
+    const cy = host._formulaCenterY + page.getBoundingClientRect().top;
+    let lineH = 0, best = Infinity;
+    page.querySelectorAll(".blk .ln").forEach(line => {
+      const r = line.getBoundingClientRect();
+      if (!r.height) return;
+      const dx = cx < r.left ? r.left - cx : (cx > r.right ? cx - r.right : 0);
+      const dy = Math.abs((r.top + r.bottom) / 2 - cy);
+      const score = dy * 10 + dx;
+      if (score < best) { best = score; lineH = r.height; }
+    });
+    if (!lineH) lineH = host._formulaLineFallback;
+    if (!lineH) return;
+    // Clamp to 1.0–1.3 times the neighboring text line height.
+    const h = Math.min(Math.max(host._formulaDetectedH, lineH), lineH * 1.3);
+    host.style.height = h + "px";
+    host.style.top = (host._formulaCenterY - h / 2) + "px";
+  }
+  /* 把一个框里的 KaTeX 等比缩放到框内（含轻微放大：检测框通常比字形紧）。
+     内容尺寸在**变换前**量（offsetWidth/Height 不受 transform 影响）；
+     `.katex-fit` 是 `width: max-content`，量的就是自然尺寸。 */
+  function fitFormulaBox(inner) {
+    const host = inner.parentElement;
+    if (!host) return;
+    const availW = host.clientWidth, availH = host.clientHeight;
+    if (!availW || !availH) return;
+    inner.style.transform = "translate(-50%, -50%)";
+    const needW = inner.offsetWidth, needH = inner.offsetHeight;
+    if (!needW || !needH) return;
+    let k = Math.min(availW / needW, availH / needH);
+    k = Math.max(0.2, Math.min(3, k));           // 防退化框把公式拉爆/压没
+    inner.style.transform = "translate(-50%, -50%) scale(" + k.toFixed(4) + ")";
+  }
+
   /* ============ 对外接口 ============ */
   return {
     ensureKatex, docNeedsMath, renderInlineMath, inlineMathOf, _mathIdxAt, _rightAfterMath,
     finalizeInlineMath, _inlineMathRoom, finalizeDisplayMath, formulaBodyWidth, mathSizePx,
     katexRender, mathTexOf, mathBlockOf, formulaBaseSize, _katexBoxes,
+    buildFormulaBoxes, finalizeFormulaBoxes,
     katexReady: () => _katexReady,      // let，加载完会置 true → 必须用函数按需取
   };
 };

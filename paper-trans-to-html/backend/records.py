@@ -6,8 +6,8 @@
   data/docs/<id>/doc.json      版式文档数据
   data/docs/<id>/images/       抽取图片
   data/docs/<id>/annotations.json  标注(高亮+笔记)
-  data/docs/<id>/translations.json 译文缓存(text_hash -> 中文)
-  data/docs/<id>/seltrans.json     “所选句译文”卡片
+  data/docs/<id>/translations.json 译文缓存(「目标语言+文本」哈希 -> 译文)
+  data/docs/<id>/seltrans.json     “所选句译文”卡片(带目标语言 lang)
 
 默认后端是 MongoDB（`mongo_store.py`）：那边插图与其它数据一样存库（GridFS），
 只有回退到这个 JSON 实现时插图才落在 `images/` 目录里。
@@ -151,7 +151,8 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         self.records_file = self.root / "records.json"
         self._lock = threading.Lock()
-        self._doc_cache: dict[str, dict] = {}
+        # {doc_id: (mtime_ns, doc)} —— 按文件 mtime 自动失效（见 save_doc/read_doc）
+        self._doc_cache: dict[str, tuple] = {}
         if not self.records_file.exists():
             self._write_records([])
 
@@ -294,16 +295,25 @@ class Store:
         f = self.doc_file(doc_id)
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
-        self._doc_cache[doc_id] = doc
+        self._doc_cache[doc_id] = (f.stat().st_mtime_ns, doc)
 
     def read_doc(self, doc_id: str) -> dict:
-        if doc_id in self._doc_cache:
-            return self._doc_cache[doc_id]
+        """读版式文档（带按文件 mtime 自动失效的内存缓存）。
+
+        与 MongoStore.read_doc 是同一机制（那边用 rev）：每次先 stat 文件的
+        mtime，与缓存条目不一致（或没有缓存）就重新读盘 —— 别的进程（重解析、
+        脚本工具）写完文件后，本进程下一个请求自动看到新数据，不用重启服务。
+        """
         f = self.doc_file(doc_id)
-        if not f.exists():
+        try:
+            mtime = f.stat().st_mtime_ns
+        except OSError:
             raise FileNotFoundError(doc_id)
+        ent = self._doc_cache.get(doc_id)
+        if ent and ent[0] == mtime:
+            return ent[1]
         doc = json.loads(f.read_text(encoding="utf-8"))
-        self._doc_cache[doc_id] = doc
+        self._doc_cache[doc_id] = (mtime, doc)
         return doc
 
     def clear_cache(self, doc_id: str) -> None:

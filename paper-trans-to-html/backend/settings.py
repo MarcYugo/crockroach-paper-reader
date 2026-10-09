@@ -30,6 +30,9 @@
 **隔离说明**：A 账号保存的 Key 只存在于 A 的账号记录里，B 账号读到的是 B 自己的
 （没有就落到环境变量/`config.json` 的安装级默认），绝不会用到 A 的 Key。
 明文 Key 只在服务端使用，接口一律回打码串。
+
+**翻译目标语言**（`target_lang`）另存在 `users.prefs.target_lang`（与 `prefs.llm` 平级），
+不放进上面那套配置槽里 —— 切/删 LLM 配置不会把语言带走。原文语言不用配，由 LLM 识别。
 """
 from __future__ import annotations
 
@@ -39,6 +42,9 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+from .translate import (DEFAULT_TARGET_LANG, TARGET_LANGS, lang_name,
+                        normalize_lang, resolve_lang)
 
 # 每个账号最多保留几套 LLM 配置（可随时切换）
 MAX_PROFILES = 3
@@ -305,6 +311,28 @@ class SettingsStore:
                 return p["api_key"]
         return None
 
+    # ---------------- 翻译目标语言（跟账号走，与上面几套 LLM 配置无关） ----------------
+    def target_lang(self, username: str) -> str:
+        """本账号的翻译目标语言（没设置过 / 存了脏值都回落到默认的简体中文）。"""
+        if not self.prefs or not username:
+            return DEFAULT_TARGET_LANG
+        try:
+            v = (self.prefs.get_prefs(username) or {}).get("target_lang")
+        except Exception:
+            return DEFAULT_TARGET_LANG
+        return normalize_lang(v)
+
+    def set_target_lang(self, username: str, lang) -> str:
+        """保存本账号的翻译目标语言（`users.prefs.target_lang`），返回规范后的语言键。
+
+        不支持的语言抛 `ValueError`。原文语言不在这里配：由 LLM 自己识别。
+        """
+        if not self.prefs:
+            raise RuntimeError("没有配置存储后端（prefs），无法保存翻译语言")
+        key = resolve_lang(lang)
+        self.prefs.set_prefs(username, {"target_lang": key})
+        return key
+
     def _write_profiles(self, username: str, profs: list[dict], active_id: str,
                         mirror: dict | None, user: str = "") -> dict:
         """落盘：写入配置槽 + 生效槽 + 顶层镜像（顶层镜像决定实际用哪套）。
@@ -375,7 +403,7 @@ class SettingsStore:
         return out
 
     def translator_config(self, username: str) -> dict:
-        """给 `Translator` 用的配置：config.json 原样 + 该账号的 LLM 覆盖项。
+        """给 `Translator` 用的配置：config.json 原样 + 该账号的 LLM 覆盖项 + 目标语言。
 
         注意要把 config.json 里的旧键(`deepseek_api_key` 等)删掉：它们已经被
         `merged()` 按优先级吸收过了，留着会让“显式清空 Key”又被旧键救回来。
@@ -389,17 +417,23 @@ class SettingsStore:
             "api_key": llm["api_key"],
             "base_url": llm["base_url"],
             "model": llm["model"],
+            "target_lang": self.target_lang(username),
         })
         return cfg
 
     def describe(self, username: str, *, active_key: str = "", status_text: str = "") -> dict:
-        """接口返回：明文 Key 一律打码，并带上“这个值是谁的/从哪来”。"""
+        """接口返回：明文 Key 一律打码，并带上“这个值是谁的/从哪来”。
+
+        另外带上翻译目标语言：`target_lang` 是当前值，`target_langs` 是可选清单
+        （前端下拉直接用，加语言不用改前端），`default_target_lang` 是默认值。
+        """
         llm = self.merged(username)
         raw = self._account_llm(username)
         src = self.sources(username)
         key = active_key if active_key else llm["api_key"]
         profs = self.profile_list(username)
         active = self._active_id(username)
+        lang = self.target_lang(username)
         return {
             "owner": username,                 # 这份配置属于哪个账号
             "provider": llm["provider"],
@@ -415,6 +449,10 @@ class SettingsStore:
             "updated_at": raw.get("updated_at"),
             "updated_by": raw.get("updated_by"),
             "status_text": status_text,
+            "target_lang": lang,                       # 译文语言（原文语言由 LLM 识别）
+            "target_lang_text": lang_name(lang),
+            "target_langs": TARGET_LANGS,              # 可选清单：键 -> 显示名
+            "default_target_lang": DEFAULT_TARGET_LANG,
             "sources": src,
             "source_text": {k: SRC_TEXT.get(v, v) for k, v in src.items()},
             "using_account_key": src.get("api_key") == SRC_ACCOUNT,

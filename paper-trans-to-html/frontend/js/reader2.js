@@ -86,6 +86,12 @@
           const etAl = tok === "al" && /(^|\s)et\s*$/i.test(text.slice(0, ws));
           boundary = !numeral && !nameLike && !etAl;
         }
+        // 小数点/编号不切（`1.1`、`3.14`）：后端 `pdf_parser.sentences.split_sentences`
+        // 是同一口径 —— 数据层现在已经「一个块 = 恰好一句」，两边不一致的话会把一个块
+        // 在界面上切回两句（笔记/高亮的句号就对不上了）。
+        if (boundary && i > 0 && /\d/.test(text[i - 1]) && /\d/.test(next)) {
+          boundary = false;
+        }
         if (boundary) ends.push(ws);
         i = j;
       } else { i++; }
@@ -97,9 +103,13 @@
       sents.push({ s: start, e });
       start = e;
     }
+    // ⚠️ 句子区间必须**铺满整块文本**：句末标点后的空白、结尾的换行、以及最后一行
+    // 被擦成空格的公式空位，都归**前一句**。否则这些字符「既不是上一句的也不是下一句的」——
+    // 永远选不中(sentOf 只能回落到相邻句)，选中高亮/笔记下划线会在行中间留出空洞，
+    // 看上去像排版坏了。文本抽取侧不用管：sentenceText/selFragText 都会 trim+压缩空白。
     if (start < n) {
-      const tail = text.slice(start).replace(/\s+$/, "");
-      if (tail.length) sents.push({ s: start, e: start + tail.length });
+      if (/\S/.test(text.slice(start))) sents.push({ s: start, e: n });
+      else if (sents.length) sents[sents.length - 1].e = n;   // 尾巴整段是空白(含换行) → 并进前一句
     }
     return sents;
   }
@@ -125,6 +135,20 @@
     return ss ? item.canonical.slice(ss.s, ss.e).replace(/\n+/g, " ").trim() : "";
   }
   function sentKey(item, si) { return item.id + "#" + si; }
+  function copySentenceText(item, si) {
+    const ss = item.sents[si];
+    if (!ss) return "";
+    let text = item.canonical.slice(ss.s, ss.e);
+    const formulas = (item.formulaBoxes || [])
+      .filter(box => box._copyRange && box._copyRange.start < ss.e && box._copyRange.end > ss.s)
+      .sort((a, b) => b._copyRange.start - a._copyRange.start);
+    for (const box of formulas) {
+      const a = Math.max(0, box._copyRange.start - ss.s);
+      const b = Math.min(text.length, box._copyRange.end - ss.s);
+      text = text.slice(0, a) + "$" + box.dataset.latex + "$" + text.slice(b);
+    }
+    return text.replace(/\n+/g, " ").trim();
+  }
   function keyParts(key) {
     const k = String(key || "");
     const p = k.lastIndexOf("#");
@@ -253,14 +277,139 @@
                           ", 0 0 2px " + hexToRgba(c.color, .9);
   }
 
-  function fitLineEl(el) {
-    el.style.transformOrigin = "left center";
-    if (el.scrollWidth > el.clientWidth + 2) {
-      const k = el.clientWidth / el.scrollWidth;
-      el.style.transform = "scaleX(" + k.toFixed(4) + ")";
-    } else {
-      el.style.transform = "";
+  /* ---- 公式框的“跟随高亮” ----
+     页面级公式覆盖层（.fbox）是绝对定位的独立元素：盖在公式空位上方、底色是页面底色
+     （要挡住尚未擦除的原字形）。高亮只画在文字 span 上，公式就成了高亮区域里一个
+     “洞”。这里按几何把**落在高亮句子里**的公式框也刷上同一套高亮样式：与某个高亮
+     span（含公式空位 span —— 它在句子区间里、同样带 .hl）有实质重叠即算命中，颜色
+     沿用那个 span 的 data-hl（与 hlPaint 同一套调色盘）。 */
+  function paintFormulaHl(fb, key) {
+    const c = hlColor(key);
+    const tint = hexToRgba(c.color, isDark() ? .2 : c.alpha);
+    // 高亮色叠在页面底色上（公式框底色必须仍然不透明，继续挡原字形）
+    fb.style.background = "linear-gradient(" + tint + "," + tint + "), var(--page-bg)";
+    if (!isDark()) { fb.style.color = ""; fb.style.textShadow = ""; return; }
+    const rgb = hex2rgb(c.color) || [255, 214, 74];
+    const [h, s] = rgb2hsl(rgb[0], rgb[1], rgb[2]);
+    fb.style.color = hsl2hex(h, Math.min(1, s * 1.1 + .15), .76);   // KaTeX 文本继承
+    fb.style.textShadow = "0 0 8px " + hexToRgba(c.color, .95) +
+                          ", 0 0 2px " + hexToRgba(c.color, .9);
+  }
+  function paintFormulaMarks() {
+    for (const pg of pages) {
+      if (!pg.el) continue;
+      for (const fb of pg.el.querySelectorAll(".fbox.hltint")) {   // 先清旧色，再重算
+        fb.classList.remove("hltint");
+        fb.style.background = "";
+        fb.style.color = "";
+        fb.style.textShadow = "";
+      }
+      const marks = [...pg.el.querySelectorAll(".rn.hl[data-hl]")]
+        .map(sp => ({ r: sp.getBoundingClientRect(), key: sp.dataset.hl }))
+        .filter(m => m.r.width > 0 && m.r.height > 0);
+      if (!marks.length) continue;
+      for (const fb of pg.el.querySelectorAll(".fbox")) {
+        const r = fb.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        let best = null, bestArea = 0;
+        for (const m of marks) {
+          const ox = Math.min(r.right, m.r.right) - Math.max(r.left, m.r.left);
+          const oy = Math.min(r.bottom, m.r.bottom) - Math.max(r.top, m.r.top);
+          if (ox <= 0 || oy <= 0) continue;
+          const area = ox * oy;
+          if (area > bestArea) { bestArea = area; best = m; }
+        }
+        if (!best) continue;
+        const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+        const inside = cx >= best.r.left - 4 && cx <= best.r.right + 4 &&
+                       cy >= best.r.top - 4 && cy <= best.r.bottom + 4;
+        // 中心不在高亮 span 里时，要求重叠面积够大 —— 否则贴着高亮句边缘的别的公式会被误染
+        if (!inside && bestArea < r.width * r.height * 0.3) continue;
+        fb.classList.add("hltint");
+        paintFormulaHl(fb, best.key);
+      }
     }
+  }
+
+  /* ---- 公式空位（被擦成空格的那截）与行宽适配 ----
+     解析侧把公式字形换成空格（见 pdf_parser/math_font._blank_math_spans），并且**已经
+     用行框宽度 `ln.w` 反推出每条空位的原宽**、随行级 `ln.gaps` 一起下发（解析侧是
+     唯一实现）。空格个数也由那个宽度反推，所以自然排出来就接近原宽；前端只做两件事：
+
+       1. 按 `data-gw`(原宽) 用 `word-spacing` **只加在空位 span** 上，把那段空格精确
+          撑/收到原宽 —— 公式后面的正文因此落回原 x（加在 .ln 上会连正文词间格一起变）；
+       2. 剩下的差只可能是**字体度量**（浏览器用 Georgia 替 PDF 内嵌字体），均摊到普通
+          词间格上，让整行宽度与行框一致。
+
+     前端**不再自己反推空位宽度**：`ln.gaps` 没带宽度（旧数据）时就不给空位定宽，
+     那些空格按普通空格参与第 2 步。 */
+  /* 本行的公式空位：`[[起, 止, 原宽 pt], …]` —— **只认解析侧下发的 `ln.gaps`**。
+     空位原宽由后端「行框宽度反推」算好(见 backend/pdf_parser/math_font._line_gap_widths)，
+     前端不自己反推：没有宽度(旧数据)就不把这段当空位，按普通空格排。 */
+  function lineGaps(ln, text) {
+    const out = [];
+    for (const g of (ln && ln.gaps) || []) {
+      const a = g[0] | 0, n = g[1] | 0, w = g[2];
+      if (n > 0 && a >= 0 && a + n <= text.length && typeof w === "number" && w > 0)
+        out.push([a, a + n, w]);
+    }
+    return out;
+  }
+  function gapAt(ld, x, y) {               // 块内区间 [x,y) 整段落在哪个空位里
+    for (const g of ld.gaps || [])
+      if (x >= ld.gs + g[0] && y <= ld.gs + g[1]) return g;
+    return null;
+  }
+  function normalSpaceCount(el) {           // 行内「普通词间格」个数（空位 span 不算）
+    let n = 0;
+    for (const sp of el.children) {
+      if (sp.classList.contains("rngap")) continue;
+      const m = sp.textContent.match(/ /g);
+      if (m) n += m.length;
+    }
+    return n;
+  }
+  /* 一行文字的**自然宽度**：用 Range 量(分数精度)。不要用 scrollWidth —— 它是整数、
+     而且会把绝对定位的行内公式覆盖层算进去。 */
+  function lineTextWidth(el) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    return r.getBoundingClientRect().width;
+  }
+  function fitLineEl(ld) {
+    const el = ld.el;
+    if (ld.free) return;      // Surya 块：流式排版（自然宽度），不按 PDF 行框拉伸/压缩
+    const S = (ld.runs[0] && ld.runs[0].S) || 1;         // PDF pt → 布局 px
+    el.style.transformOrigin = "left center";
+    el.style.transform = "";
+    el.style.wordSpacing = "";
+    const gaps = [...el.querySelectorAll(".rngap")];
+    for (const sp of gaps) sp.style.wordSpacing = "";   // 幂等：先复原上一轮的补偿再量
+    const boxW = el.getBoundingClientRect().width;       // PDF 行框宽 = 原稿这一行排到哪
+    let textW = lineTextWidth(el);
+    for (const sp of gaps) {
+      // 空位：原宽已由解析侧算好(行框宽度反推)，这里只把它撑/收到正好 gw
+      // —— 空格的字宽 ≠ 原公式宽度，不撑的话公式后面的正文会整体左移。
+      const n = sp.textContent.length;
+      const gw = parseFloat(sp.dataset.gw) * S;          // 原公式宽度(px)
+      if (!n || !(gw > 0)) continue;
+      const nat = sp.getBoundingClientRect().width;
+      const adv = nat / n;                               // 空格字宽
+      const ws = Math.max((gw - nat) / n, -0.9 * adv);    // 别把空格压成负宽
+      sp.style.wordSpacing = ws.toFixed(3) + "px";
+      textW += ws * n;
+    }
+    // 行里剩下的差只可能是**字体度量**（浏览器用 Georgia 替 PDF 内嵌字体）：均摊到
+    // 普通词间格上，让整行宽度与行框一致。空位有自己的内联值，不受行级影响。
+    const rest = boxW - textW;
+    const wn = normalSpaceCount(el);
+    if (wn && Math.abs(rest) > 0.5) {
+      const ws = clamp(rest / wn, -1.5, 3);
+      el.style.wordSpacing = ws.toFixed(3) + "px";
+      textW += ws * wn;
+    }
+    // 还有溢出的（空位收窄被下限拦住 / 整行真排不下）→ 整体压缩兜底
+    if (textW > boxW + 2) el.style.transform = "scaleX(" + (boxW / textW).toFixed(4) + ")";
   }
   /* 把块内每一行的行宽适配跑一遍。
      ⚠️ 时机很重要：**必须在所有会改行宽的东西之后**。
@@ -271,7 +420,7 @@
      正文跟着缩到 68% 宽，看着就是「这几行字号比别的小」；
      727 行不含公式的行「施加值 vs 应有值」完全相等，可作对照。 */
   function fitItemLines(item) {
-    for (const ld of item.linesData) fitLineEl(ld.el);
+    for (const ld of item.linesData) fitLineEl(ld);
   }
 
   /* ---- 重排时的“视觉锚点” ----
@@ -331,6 +480,9 @@
     ordSeq = 0;
     sel = null; hideBar();
 
+    // surya 解析的文档：块级数据（label/bbox/html），走独立的流式渲染分支
+    // （见 buildSuryaItem）；其余后端仍是 PyMuPDF 的“逐行绝对定位”渲染。
+    const surya = DOC.parser === "surya";
     DOC.pages.forEach((pg, pi) => {
       const S = t.pageW / pg.w;
       const pageEl = el("div", "page");
@@ -346,16 +498,24 @@
           width: im.w * S + "px", height: im.h * S + "px",
         });
         const img = el("img");
-        img.src = "/api/doc/" + docId + "/img/" + im.file;
+        const imageUrl = "/api/doc/" + docId + "/img/" + im.file;
+        img.src = im.cache_key ? imageUrl + "?v=" + encodeURIComponent(im.cache_key) : imageUrl;
+        img.alt = im.class_name || "Figure";
         div.appendChild(img);
         pageEl.appendChild(div);
         pgObj.items.push({ kind: "img", el: div, x: im.x * S, y: im.y * S, w: im.w * S, h: im.h * S });
       }
 
       for (const t of pg.texts || []) {
-        const item = buildTextItem(t, S, pageEl, pi);
+        const item = surya ? buildSuryaItem(t, S, pageEl, pi)
+                           : buildTextItem(t, S, pageEl, pi);
         pgObj.items.push(item);
       }
+
+      // detection-service-group 公式框覆盖层：按 bbox_norm × 页面显示宽高定位在页面上
+      // （内容来自服务组回包的 latex，见 r2-math.js 的 buildFormulaBoxes）。
+      // surya 文档没有这一层（公式来自块里的 <math>/latex），调用是空转。
+      buildFormulaBoxes(pg, pageEl, S, pi);
 
       pagesEl.appendChild(pageEl);
       pages.push(pgObj);
@@ -363,8 +523,12 @@
 
     // 套用标注并重画
     for (const id in itemById) { const it = itemById[id]; setAnnoRanges(it); rebuildItem(it); }
+    for (const page of pages) attachFormulaBoxes(page, page.el);
     finalizeDisplayMath();     // 公式覆盖层已挂到文档上 → 量真实高度并回填块高
     finalizeInlineMath();      // 行内公式：量原字形矩形 → 顶上 KaTeX
+    finalizeFormulaBoxes();    // 页面公式框：量自然尺寸 → 等比缩放到框内（等字体就绪）
+    finalizeSuryaBlocks();     // surya 块：量流式内容的真实高度 → 回填 contentH / 卡片位置
+    settleSuryaVertical();     // surya 块：算内容纵向避让量 syShift（relayoutPage 应用）
     const paraMode = !selTransList.length;      // 有“所选句译文”时不展开整段译文(两者互斥)
     if (showZhOn && paraMode) openAllTrans();
     if (paraMode) {
@@ -403,7 +567,9 @@
   const {
     ensureKatex, docNeedsMath, renderInlineMath, inlineMathOf, _mathIdxAt, _rightAfterMath,
     finalizeInlineMath, _inlineMathRoom, finalizeDisplayMath, formulaBodyWidth, mathSizePx,
-    katexRender, mathTexOf, mathBlockOf, formulaBaseSize, _katexBoxes, katexReady,
+    katexRender, mathTexOf, mathBlockOf, formulaBaseSize, _katexBoxes,
+    buildFormulaBoxes, finalizeFormulaBoxes,
+    katexReady,
   } = R2Math({
     docId, findItem, itemById, fitItemLines,
     get DOC() { return DOC; },
@@ -424,7 +590,9 @@
     const linesData = [];
     let contentH = t.h * S;                  // 公式块没有行元素 → 块高直接用外框
     if (!mb) {
-      for (const ln of t.lines) {
+      // ⚠️ 新数据里一行**只有一个 run**（后端 `text_layer._merge_line_runs`），
+      // 所以下面循环里每行只会切出一个 `<span class="rn">`。
+      for (const ln of (t.lines || [])) {
         const dy = (ln.y - t.y) * S;         // 该行相对文字块顶部的偏移(px)
         const ld = {
           ln, dy, runs: (ln.runs || []).map(r => Object.assign({}, r, { S, g: 0 })),
@@ -448,6 +616,7 @@
     // 由 render() 末尾的 finalizeDisplayMath() 回填。
     if (mb) {
       const box = el("div", "mathbox");
+      box.dataset.latex = mb.latex;
       box.style.fontSize = mathSizePx(formulaBaseSize(linesData, pi, t.lines) * S) + "px";
       if (katexReady() && katexRender(box, mb.latex)) {
         // 正常路径
@@ -473,6 +642,11 @@
       ld.gs = g;
       for (const r of ld.runs) { r.g = g; g += r.t.length; }
       g += 1; // '\n'
+      // 公式空位：解析侧下发的精确区间与**原宽**（见 lineGaps）；行宽适配
+      // 按那个原宽单独把空位撑开，让公式后面的正文落回原 x。
+      // ⚠️ 用 `ld.ln`（建行时存下的原始行数据）—— `ln` 只是上面那个 for...of 的循环变量，
+      // 出了那个循环就没了。
+      ld.gaps = lineGaps(ld.ln, ld.text);
     }
     const item = {
       kind: "blk", id: t.id, pi, el: blk, text: t.text,
@@ -484,6 +658,12 @@
     };
     item.canonical = linesData.map(ld => ld.text + "\n").join("");
     item.bodyRun = bodyRunOf(linesData);       // 块内主样式（修正跨公式 run 的尾部正文）
+    // 行内公式：现在是**旧数据的兼容路径** —— 旧版解析器会把匹配到的 LaTeX 内联进
+    // 文本(`\(…\)` / `$$…$$`)，由 `rebuildItem` 末尾的 `renderInlineMath` 就地换
+    // KaTeX。新数据（detection-service-group）没有内联：公式是**页面级公式框**，由
+    // `buildFormulaBoxes` 按 bbox_norm 叠覆盖层。
+    // 更旧的 Surya 路径靠块 HTML 里的 `<math>` + 覆盖层，新数据没有 `t.html`，
+    // `inlineMathOf` 直接返回 null（变成空转，保留只为兼容旧 doc.json）。
     // 行内公式对齐：公式块不走这条（它的 html 就是 `<math display="block">…` 一整块数学，
     // 已经由行外覆盖层渲染了；再当行内渲染一遍会叠成**重影**）。
     item.inlineMath = mb ? null : inlineMathOf(t, item.canonical);
@@ -515,6 +695,332 @@
     pageEl.appendChild(blk);
     itemById[t.id] = item;
     return item;
+  }
+
+  /* ============ Surya 2 的块级渲染（与 PyMuPDF 的“逐行绝对定位”是两套） ============
+     surya 后端下发的版面数据是**块级**的：每块只有 label / bbox / html（块内没有行几何）。
+     所以这里不做逐行还原，而是：
+       · `.blk` 仍按 bbox 绝对定位（阅读顺序与版面关系不变）；
+       · 块内文字**正常流式排版**：字号/行高由解析侧估算（`t.size` / `t.line_h`，单位 pt），
+         标题加粗放大、图注/脚注小一号（CSS `.sy-*`），长段落自动换行；
+       · 行内公式：解析侧给了精确的字符区间（`t.math`，含 LaTeX 源码）—— 原字形
+         就地换成 KaTeX（suryaInlineMath），正文围绕公式自然重排；
+       · 独立公式（kind="formula" + latex）：KaTeX 块渲染（与 PyMuPDF 公式块同一套收尾）；
+       · 表格（kind="table"）：白名单渲染 Surya 的 `<table>` HTML，不参与句子选中。
+     文本块的内容仍由通用 `rebuildItem` 生成 —— 选中/高亮/笔记重建后样式与公式都不丢。 */
+  function buildSuryaItem(t, S, pageEl, pi) {
+    const bx = t.x * S, by = t.y * S;
+    const blk = el("div", "blk sy");
+    if (t.kind) blk.classList.add("sy-" + t.kind);
+    if (t.kind === "heading") blk.classList.add("sy-l" + (t.level || 2));
+    Object.assign(blk.style, { left: bx + "px", top: by + "px", width: t.w * S + "px" });
+    blk.dataset.id = t.id;
+    if (t.label) blk.dataset.label = t.label;
+    // 对齐方式：解析侧下发 t.align（新数据）；旧数据缺字段时按同一规则本地兜底 ——
+    // 正文类（text/list/caption/footnote）两端对齐（CSS `[data-align="justify"]`），
+    // 让行右缘像原 PDF（LaTeX justified 排版）一样齐平到栏边界；标题/页眉页脚等
+    // 保持左对齐（单行，两端对齐无意义）。末行不拉伸，与原 PDF 一致。
+    blk.dataset.align = (t.align === "justify" || t.align === "left"
+                         || t.align === "center" || t.align === "right")
+      ? t.align
+      : ((t.kind === "text" || t.kind === "list" ||
+          t.kind === "caption" || t.kind === "footnote") ? "justify" : "left");
+
+    const size = t.size > 0 ? t.size : 10;        // 解析侧估的字号（pt）
+    blk.style.fontSize = size * S + "px";
+    // 竖排文本（旋转 90° 的页眉/水印，如 arXiv 侧边戳）：Surya 不给旋转信息，用
+    // “又高又窄 + 短文本”判 —— 内容整体旋转、沿条带自下而上排（见 CSS .sy-vertical）
+    if (t.h > t.w * 3 && (t.text || "").length >= 2 && (t.text || "").length <= 80) {
+      blk.classList.add("sy-vertical");
+    }
+
+    const mb = mathBlockOf(t);                     // kind="formula" + latex → KaTeX 块
+    const linesData = [];
+    let contentH = t.h * S;        // 初值=bbox 高；挂到文档后由 finalizeSuryaBlocks 回填实测高
+    if (mb) {
+      const box = el("div", "mathbox");
+      box.dataset.latex = mb.latex;
+      box.style.fontSize = mathSizePx(size * S) + "px";
+      if (katexReady() && katexRender(box, mb.latex)) {
+        // 正常路径
+      } else {
+        box.textContent = mb.latex;                // KaTeX 未就绪/LaTeX 有问题 → 源码兜底
+        box.classList.add("failed");
+      }
+      box._blk = blk;
+      box._contentH = contentH;
+      box._origW = t.w * S;                        // 公式主体宽 = Surya 给的外框宽
+      if (box._hasTag) box.style.width = "100%";
+      blk.appendChild(box);
+      _katexBoxes.add(box);
+    } else if (t.kind === "table") {
+      const tb = suryaTableEl(t.html);
+      const title = suryaTableTitle(t);
+      if (title) blk.appendChild(title);
+      blk.appendChild(tb || el("div", "ln syln", t.text || ""));
+    } else {
+      // 文本块：唯一一条“流式行”。类名要含 ln（行内公式的让位机制按 .ln 找行），
+      // `ld.free` 让 fitLineEl 跳过（这里的宽度是排版自然宽，不是 PDF 行框）。
+      const lineEl = el("div", "ln syln");
+      const lh = t.line_h > 0 ? t.line_h : size * 1.42;
+      lineEl.style.lineHeight = lh * S + "px";
+      blk.appendChild(lineEl);
+      const ln = (t.lines && t.lines[0]) || { runs: [] };
+      const ld = {
+        ln, dy: 0, free: true, gaps: [],
+        // 补上 run 级的字号/字体（后端 run 只有 t/b/i/up；styleRun 与公式基准字号都按 r.s 算）
+        runs: (ln.runs || []).map(r => Object.assign({ s: size, fam: "serif" }, r, { S, g: 0 })),
+        el: lineEl, text: "", gs: 0,
+      };
+      ld.text = ld.runs.map(r => r.t).join("");
+      linesData.push(ld);
+    }
+    blk.style.height = contentH + "px";
+
+    // canonical：行文本原样拼接，行末一个 '\n'（与 PyMuPDF 路径同口径）
+    let g = 0;
+    for (const ld of linesData) {
+      ld.gs = g;
+      for (const r of ld.runs) { r.g = g; g += r.t.length; }
+      g += 1; // '\n'
+    }
+    const item = {
+      kind: "blk", id: t.id, pi, el: blk, text: t.text || "",
+      x: bx, y: by, w: t.w * S, h: t.h * S, contentH,
+      latex: (mb && mb.latex) || "",
+      linesData, canonical: "", sents: [],
+      markerRanges: [], selRanges: [], shift: 0, expH: 0,
+      ord: ordSeq++, surya: true,
+      syHeading: t.kind === "heading",      // 标题：finalizeSuryaBlocks 里按需放宽不折行
+    };
+    item.canonical = linesData.map(ld => ld.text + "\n").join("");
+    item.bodyRun = bodyRunOf(linesData)
+      || { s: size, fam: "serif", i: false, b: false, up: false };
+    // 行内公式：解析侧给的是 text 里的**精确字符区间**（比旧路径的“HTML 对齐”稳）。
+    // 渲染交给 suryaInlineMath：`.mspan` 原字形就地换成 KaTeX（见 rebuildItem 末尾）；
+    // 公式块不重复渲染（会叠重影）。
+    item.inlineMath = (!mb && linesData.length && t.math && t.math.length)
+      ? suryaMathRanges(t, item.canonical) : null;
+    item.sents = mb ? [] : splitSentences(item.canonical).map((sg, si) =>
+      ({ si, s: sg.s, e: sg.e, key: item.id + "#" + si,
+        text: item.canonical.slice(sg.s, sg.e).replace(/\n+/g, " ").trim() }));
+    // 表格没有可切句的 .rn 结构：点它不该弹“翻译/标注”工具条（点击分支按这个清选中）
+    if (t.kind === "table") item.noSelect = true;
+
+    // 译文 + 内嵌笔记展开区（与 buildTextItem 同一套约定）
+    const exp = el("div", "exp");
+    exp.style.top = contentH + "px";
+    const tsec = el("div", "card-in tsec");
+    tsec.hidden = true;
+    exp.appendChild(tsec);
+    const stbox = el("div", "stbox");
+    stbox.hidden = true;
+    exp.appendChild(stbox);
+    const nbox = el("div", "nbox");
+    nbox.hidden = true;
+    nbox.addEventListener("click", e => e.stopPropagation());
+    stbox.addEventListener("click", e => e.stopPropagation());
+    exp.appendChild(nbox);
+    blk.appendChild(exp);
+    item.exp = exp; item.tsec = tsec; item.stbox = stbox; item.nbox = nbox;
+
+    pageEl.appendChild(blk);
+    itemById[t.id] = item;
+    return item;
+  }
+
+  /* Surya 块的行内数学区间（解析侧给的 text 偏移）→ 覆盖层用的 {a,b,latex}。
+     越界/空的丢掉；区间相对 `t.text`，canonical 只在行末多一个 '\n'，不影响行内区间。 */
+  function suryaMathRanges(t, canonical) {
+    const out = [];
+    for (const m of (t.math || [])) {
+      const a = m && m.a | 0, b = m && m.b | 0;
+      const latex = String((m && m.latex) || "").trim();
+      if (!latex || !(b > a) || a < 0 || b > canonical.length) continue;
+      out.push({ a, b, latex });
+    }
+    return out.length ? out : null;
+  }
+
+  /* Surya 块的行内公式：把 `.mspan` 原字形**就地换成 KaTeX**。
+     不走 .mathbox.inline 覆盖层 —— 那套是给“逐行绝对定位、行宽固定”的 PyMuPDF 版面
+     设计的（覆盖层 + mspacer 让位）；流式排版里行会重排，覆盖层定位不稳（实测公式会
+     压到隔壁词上）。就地渲染后正文围绕真公式自然重排，宽度与基线都交给浏览器。
+     渲染失败（KaTeX 未就绪 / LaTeX 有错）就保持原字形 —— 至少可读，不会整段空白。
+     `rebuildItem` 每次重建都会重新走一遍（幂等）。 */
+  function suryaInlineMath(item) {
+    const list = item.inlineMath;
+    if (!list || !item.el) return;
+    const byMi = new Map();
+    for (const sp of item.el.querySelectorAll(".mspan[data-mi]")) {
+      const mi = sp.dataset.mi;
+      if (!byMi.has(mi)) byMi.set(mi, []);
+      byMi.get(mi).push(sp);
+    }
+    if (!byMi.size) return;
+    const S = (item.linesData[0] && item.linesData[0].runs[0] &&
+               item.linesData[0].runs[0].S) || 1;
+    const sizePt = (item.bodyRun && item.bodyRun.s) || 10;
+    for (const [miKey, spans] of byMi) {
+      const f = list[parseInt(miKey, 10)];
+      if (!f) continue;
+      const host = document.createElement("span");
+      host.className = "katex-inline";
+      host.dataset.mi = miKey;
+      host.dataset.latex = f.latex;
+      host.style.fontSize = mathSizePx(sizePt * S) + "px";
+      let ok = false;
+      try { ok = katexReady() && katexRender(host, f.latex, false); }
+      catch (e) { ok = false; }
+      if (!ok) continue;                       // 保底：原字形仍在（没被删）
+      const first = spans[0];
+      // 高亮/选中/笔记下划线是加在 span 上的：跟着公式一起搬到 KaTeX 宿主上
+      for (const cls of ["hl", "hasnote", "sel"])
+        if (first.classList.contains(cls)) host.classList.add(cls);
+      if (first.dataset.hl) host.dataset.hl = first.dataset.hl;
+      for (const st of ["background", "color", "textShadow"])
+        if (first.style[st]) host.style[st] = first.style[st];
+      first.parentNode.insertBefore(host, first);
+      for (const sp of spans) sp.remove();     // 原字形不再占位（宽度由 KaTeX 决定）
+    }
+  }
+
+  /* Surya 块的块内换行：canonical 里的 '\n'（`</li>`、`<br>` 等）在 HTML 流里会被
+     折叠成空格，列表项/表格行会连成一行。把 `\n` 拆成 <br> —— 只动文本节点，
+     span 上的 data-g / 高亮 class 都保持原样（选句/高亮仍按字符区间走）。
+     KaTeX 子树跳过（MathML 文本节点里的换行不动它）。 */
+  function suryaLineBreaks(item) {
+    const line = item.el && item.el.querySelector(".syln");
+    if (!line) return;
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT, null);
+    const jobs = [];
+    let node;
+    while ((node = walker.nextNode()))
+      if (node.nodeValue.indexOf("\n") >= 0) jobs.push(node);
+    for (const tn of jobs) {
+      if (tn.parentNode && tn.parentNode.closest &&
+          tn.parentNode.closest(".katex-inline, .katex")) continue;
+      const parts = tn.nodeValue.split("\n");
+      const frag = document.createDocumentFragment();
+      parts.forEach((p, i) => {
+        if (i) frag.appendChild(document.createElement("br"));
+        if (p) frag.appendChild(document.createTextNode(p));
+      });
+      tn.parentNode.replaceChild(frag, tn);
+    }
+  }
+
+  /* Surya 的表格 HTML → 安全 DOM（白名单）。
+     HTML 来自外部推理服务，绝不直接 innerHTML：只放行表格结构与基础行内标签，
+     属性只留 colspan/rowspan（表格布局必需）。拿不到 <table> 时返回 null。 */
+  const SY_TABLE_TAGS = { TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, TD: 1, TH: 1,
+                          CAPTION: 1, B: 1, I: 1, EM: 1, STRONG: 1, SUP: 1, SUB: 1,
+                          BR: 1, SPAN: 1 };
+  function suryaTableTitle(t) {
+    const html = String(t && t.html || "");
+    const label = String(t && (t.label || t.raw_label) || "").trim();
+    if (!label || /<caption\b/i.test(html)) return null;
+    return el("div", "sytable-title", label);
+  }
+  function suryaTableEl(html) {
+    const s = String(html || "");
+    if (!s || s.indexOf("<table") < 0) return null;
+    let doc = null;
+    try { doc = new DOMParser().parseFromString(s, "text/html"); }
+    catch (e) { return null; }
+    const src = doc && doc.body && doc.body.querySelector("table");
+    if (!src) return null;
+    const wrap = el("div", "sytable");
+    wrap.appendChild(syCleanNode(src));
+    return wrap;
+  }
+  function syCleanNode(node) {
+    if (node.nodeType === 3) return document.createTextNode(node.nodeValue);
+    if (node.nodeType !== 1) return document.createTextNode("");
+    const tag = node.tagName.toUpperCase();
+    if (!SY_TABLE_TAGS[tag]) {          // 不认识的标签：剥壳、保留里面的内容
+      const frag = document.createDocumentFragment();
+      for (const c of node.childNodes) frag.appendChild(syCleanNode(c));
+      return frag;
+    }
+    const out = document.createElement(tag.toLowerCase());
+    if (tag === "TD" || tag === "TH") {
+      for (const name of ["colspan", "rowspan"]) {
+        const v = parseInt(node.getAttribute(name), 10);
+        if (v > 1 && v <= 100) out.setAttribute(name, String(v));
+      }
+    }
+    for (const c of node.childNodes) out.appendChild(syCleanNode(c));
+    return out;
+  }
+
+  /* Surya 块（流式排版）收尾：内容高度要等挂到文档上才量得准 —— 回填
+     item.contentH / `.blk` 高度 / 译文卡位置（relayout 的避让都按 contentH 算）。
+     **只放大不缩小**：文本量比原框多时按实际高度长出去（解析侧已按块框做过
+     缩字适配，溢出很小）。公式/表格块不走这里（高度由各自机制管）。 */
+  function finalizeSuryaBlocks() {
+    for (const id in itemById) {
+      const it = itemById[id];
+      if (!it.surya || it.kind !== "blk" || !it.linesData.length) continue;
+      if (it.syHeading) {
+        // 标题不折行：量内容自然宽度，需要时把块放宽（最多到原框的 2.4 倍，长标题
+        // 顶多折一行）。⚠️ CSS 的 `min(max-content, X)` 不合法（关键词不能进 min()），
+        // 只能挂载后量。窄框标题（居中的 "Abstract" 之类）折行会压到下面正文上。
+        const lineEl = it.linesData[0].el;
+        const prevW = lineEl.style.width;
+        lineEl.style.width = "max-content";     // 量单行自然宽（块级盒 max-content 有效）
+        const natural = lineEl.offsetWidth;
+        lineEl.style.width = prevW;
+        if (natural > it.w + 1) {
+          // +4px 余量：自然宽是整数，差零点几个像素就会在词中间折行（"Abstract" 实测）
+          it.el.style.width = Math.min(natural + 4, it.w * 2.4).toFixed(1) + "px";
+        }
+      }
+      let h = 0;
+      for (const ld of it.linesData) h = Math.max(h, ld.el.offsetHeight + (ld.dy || 0));
+      h = Math.max(h, it.h);
+      it.contentH = h;
+      it.el.style.height = h + "px";
+      if (it.exp) it.exp.style.top = h + "px";
+    }
+  }
+
+  /* Surya 块的**纵向避让**：检测框纵向膨胀 + 行内 KaTeX 撑高行盒，实测内容
+     常常比块框高 —— “文本满框”时上一块的文字会与下一块叠在一起。这里在
+     finalizeSuryaBlocks 量完真实高度后，按「同栏、y 升序」逐块算一个**只下移**
+     的位移量 `it.syShift`：本块顶不得高于同栏任一已排块的内容底 + SY_VGAP。
+     同栏 = x 区间重叠 ≥ 两者较窄宽的一半（双栏左右栏互不影响；跨栏块是
+     下方两栏共同的前邻）；级联自然收敛 —— 按 y 序处理，前块用的都是避让后的底。
+     ⚠️ 位移量每轮都**基于原始 it.y 重算**（且不写回数据）：缩放/窗口变化会
+     整页重建，每次都以原始几何为基准，不会累积漂移；应用交给 relayoutPage
+     的位移链（syShift 是它的起点，与“卡片顶开”量叠加，transform / 页面高度 /
+     笔记卡位置因此都自动跟随）。 */
+  const SY_VGAP = 2;      // px：避让后相邻块内容之间至少保留的空隙
+  function settleSuryaVertical() {
+    const byPage = new Map();
+    for (const id in itemById) {
+      const it = itemById[id];
+      if (!it.surya || it.kind !== "blk") continue;
+      if (it.el.classList.contains("sy-vertical")) continue;   // 竖排条带不参与
+      let arr = byPage.get(it.pi);
+      if (!arr) byPage.set(it.pi, arr = []);
+      arr.push(it);
+    }
+    for (const list of byPage.values()) {
+      list.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+      const settled = [];           // [{x, w, bottom}]：已排块（bottom 含避让量）
+      for (const it of list) {
+        let need = -Infinity;
+        for (const s of settled) {
+          const ov = Math.min(s.x + s.w, it.x + it.w) - Math.max(s.x, it.x);
+          if (ov < Math.min(s.w, it.w) * 0.5) continue;        // 不同栏
+          need = Math.max(need, s.bottom + SY_VGAP);
+        }
+        it.syShift = Math.max(0, need - it.y);      // 只下移，绝不上移
+        settled.push({ x: it.x, w: it.w,
+                       bottom: it.y + it.syShift + it.el.offsetHeight });
+      }
+    }
   }
 
   /* ============ 高亮调色盘：3 个默认色 + 3 个自定义色 ============
@@ -665,6 +1171,11 @@
           const a = Math.max(gs, im.a), b = Math.min(ge, im.b);
           if (a < b) { cuts.add(a); cuts.add(b); }
         }
+        // 公式空位（连续空格）也切出来：fitLineEl 要单独给这些 span 补宽度
+        for (const g of (ld.gaps || [])) {
+          const a = Math.max(gs, ld.gs + g[0]), b = Math.min(ge, ld.gs + g[1]);
+          if (a < b) { cuts.add(a); cuts.add(b); }
+        }
         const pts = [...cuts].sort((x, y) => x - y);
         for (let k = 0; k < pts.length - 1; k++) {
           const x = pts[k], y = pts[k + 1];
@@ -676,6 +1187,11 @@
           }
           const sp = el("span", "rn" + (cls.size ? " " + [...cls].join(" ") : ""));
           sp.dataset.g = x;
+          const gp = gapAt(ld, x, y);
+          if (gp) {                                          // 空位：行宽适配时按原宽单独补宽
+            sp.classList.add("rngap");
+            if (gp[2] > 0) sp.dataset.gw = gp[2];
+          }
           styleRun(sp, run, bodyS);
           // 公式之后的正文被 PyMuPDF 误标成上标（0.7 倍）→ 按块内主样式重绘。
           // 只改“写着像单词”的片段，真正的上标（`2`、`(i)`、`*`）不动。
@@ -686,7 +1202,7 @@
           if (item.bodyRun && smallish && (/[A-Za-z]{2,}/.test(piece) || /^[.,;:]+$/.test(piece)) &&
               _rightAfterMath(item.inlineMath, gs, ge, x))
             styleRun(sp, Object.assign({}, run, item.bodyRun), bodyS);
-          if (hl) hlPaint(sp, hl);           // 高亮底色（含自定义色）/ 暗夜下的荧光
+          if (hl) { hlPaint(sp, hl); sp.dataset.hl = hl; }   // 公式框高亮按 data-hl 取同一色
           const mi = _mathIdxAt(item.inlineMath, x, y);
           if (mi >= 0) {
             sp.classList.add("mspan");
@@ -701,6 +1217,10 @@
       }
     }
     renderInlineMath(item.el);          // 行内数学：\(…\) / $$…$$ 就地换成 KaTeX
+    if (item.surya) {
+      suryaInlineMath(item);            // Surya 块：.mspan 原字形 → 就地 KaTeX
+      suryaLineBreaks(item);            // Surya 块：canonical 里的 '\n' → <br>（列表/表格行）
+    }
     // 重建会把 .ln 里的内容（连同上一轮插的 spacer）清掉 → 让位要重算，
     // 否则被推开的正文会“缩”回公式底下。没渲染过公式的块里没有 .mathbox.inline，是空转。
     _inlineMathRoom(item);
@@ -752,23 +1272,172 @@
     return li;
   }
 
+  /* 点在「行与行之间的空隙 / 行尾空白 / 块框里没画字的地方」时 e.target 是 .page
+     ——`.blk` 容器不吃指针事件（见 style.css 的说明），所以这里按几何位置找回最近的一行。
+     入参是**布局坐标**（页内 px）；返回 { item, y }，离得太远(超出 HIT_SLOP)则 null。 */
+  const HIT_SLOP = 12;                 // 容差：约一行内距（正文 12pt），超过就算点了空白
+  function nearestLineAt(x, y) {
+    let best = null, bestD = Infinity;
+    for (const id in itemById) {
+      const it = itemById[id];
+      if (it.kind !== "blk" || !it.linesData || !it.linesData.length) continue;
+      for (const ld of it.linesData) {
+        const r = ld.el.getBoundingClientRect();
+        if (!r.width) continue;
+        // ⚠️ 两个方向都要在容差内。只给纵向容差的话，「横向恰好落在远处那一行上」
+        // （比如页脚那块只有一两个字的块）会被当成最近的一行选中。
+        if (x < r.left - HIT_SLOP || x > r.right + HIT_SLOP ||
+            y < r.top - HIT_SLOP || y > r.bottom + HIT_SLOP) continue;
+        const dx = Math.max(r.left - x, 0, x - r.right);       // 框内算 0
+        const dy = Math.max(r.top - y, 0, y - r.bottom);
+        const d = dx + dy * 2;                                 // 纵向更敏感：宁可换行也别换块
+        if (d < bestD) { bestD = d; best = { item: it, y }; }
+      }
+    }
+    return best;
+  }
+
+  function attachFormulaBoxes(page, pageEl) {
+    for (const box of pageEl.querySelectorAll(".fbox")) {
+      const rect = box.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+      let bestGap = null, bestOverlap = 0;
+      if (box.dataset.cls === "InlineFormula") {
+        for (const item of page.items) {
+          if (item.kind !== "blk" || !item.linesData.length) continue;
+          for (const line of item.linesData) {
+            for (const gap of line.el.querySelectorAll(".rngap")) {
+              const r = gap.getBoundingClientRect();
+              const overlapX = Math.max(0, Math.min(rect.right, r.right) - Math.max(rect.left, r.left));
+              const overlapY = Math.max(0, Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top));
+              const overlap = overlapX * overlapY;
+              if (overlap > bestOverlap) {
+                const start = parseInt(gap.dataset.g, 10);
+                bestOverlap = overlap;
+                bestGap = { item, start, end: start + gap.textContent.length };
+              }
+            }
+          }
+        }
+      }
+      let item, si;
+      if (bestGap && Number.isFinite(bestGap.start) && bestGap.item.sents.length) {
+        item = bestGap.item;
+        si = sentOf(item, bestGap.start);
+        box._copyRange = bestGap;
+      } else {
+        let nearest = null, nearestD = Infinity;
+        for (const candidate of page.items) {
+          if (candidate.kind !== "blk" || !candidate.sents.length) continue;
+          for (let lineIndex = 0; lineIndex < candidate.linesData.length; lineIndex++) {
+            const r = candidate.linesData[lineIndex].el.getBoundingClientRect();
+            const dx = Math.max(r.left - cx, 0, cx - r.right);
+            const dy = Math.max(r.top - cy, 0, cy - r.bottom);
+            const d = dx + dy * 2;
+            if (d < nearestD) {
+              nearestD = d;
+              nearest = { item: candidate, si: sentOf(candidate, candidate.linesData[lineIndex].gs) };
+            }
+          }
+        }
+        if (!nearest) continue;
+        item = nearest.item;
+        si = nearest.si;
+        if (box.dataset.cls === "InlineFormula") {
+          let closest = null, closestD = Infinity;
+          for (const line of item.linesData) {
+            for (const gap of line.el.querySelectorAll(".rngap")) {
+              const r = gap.getBoundingClientRect();
+              const dx = Math.max(r.left - cx, 0, cx - r.right);
+              const dy = Math.max(r.top - cy, 0, cy - r.bottom);
+              const d = dx + dy * 2;
+              if (d < closestD) {
+                closestD = d;
+                closest = { item, start: parseInt(gap.dataset.g, 10),
+                  end: parseInt(gap.dataset.g, 10) + gap.textContent.length };
+              }
+            }
+          }
+          if (closest && closestD <= 120 && Number.isFinite(closest.start)) {
+            box._copyRange = closest;
+            si = sentOf(item, closest.start);
+          }
+        }
+      }
+      box._selectRef = { item, si };
+      if (!item.formulaBoxes) item.formulaBoxes = [];
+      item.formulaBoxes.push(box);
+    }
+  }
+
+  function formulaSelectionTarget(target) {
+    if (!target) return null;
+    if (target._selectRef) return { host: target, ref: target._selectRef };
+    const blk = target.closest(".blk");
+    const item = blk && findItem(blk.dataset.id);
+    if (!item) return null;
+    if (target.matches(".mathbox.inline")) {
+      const formula = item.inlineMath && item.inlineMath[parseInt(target.dataset.mi, 10)];
+      if (formula && item.sents.length)
+        return { host: target, ref: { item, si: sentOf(item, formula.a) }, inline: true };
+    }
+    if (item.sents.length)
+      return { host: target, ref: { item, si: fallbackSentence(item, item.y + item.h / 2) } };
+    const page = pages[item.pi];
+    if (!page) return null;
+    const r = target.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    let nearest = null, nearestD = Infinity;
+    for (const candidate of page.items) {
+      if (candidate.kind !== "blk" || !candidate.sents.length) continue;
+      for (const line of candidate.linesData) {
+        const lr = line.el.getBoundingClientRect();
+        const dx = Math.max(lr.left - cx, 0, cx - lr.right);
+        const dy = Math.max(lr.top - cy, 0, cy - lr.bottom);
+        const d = dx + dy * 2;
+        if (d < nearestD) {
+          nearestD = d;
+          nearest = { item: candidate, si: sentOf(candidate, line.gs) };
+        }
+      }
+    }
+    return nearest ? { host: target, ref: nearest } : null;
+  }
+
   /* ---- 应用/清除选中高亮（可多句、跨块跨页） ---- */
   function applySelRanges() {
+    document.querySelectorAll(".fbox.formula-sel").forEach(box => box.classList.remove("formula-sel"));
     for (const id in itemById) {
       const it = itemById[id];
       if (it.selRanges && it.selRanges.length) { it.selRanges = []; rebuildItem(it); }
     }
     if (!sel) return;
     const byItem = new Map();
-    for (const r of sel.sents) {
-      if (!byItem.has(r.item)) byItem.set(r.item, []);
-      byItem.get(r.item).push(sentRange(r.item, r.si));
+    if (!sel.formulaOnly) {
+      for (const r of sel.sents) {
+        if (!byItem.has(r.item)) byItem.set(r.item, []);
+        byItem.get(r.item).push(sentRange(r.item, r.si));
+      }
     }
     for (const [it, ranges] of byItem) { it.selRanges = ranges; rebuildItem(it); }
+    if (sel && !sel.formulaOnly) {
+      for (const ref of sel.sents) {
+        const range = sentRange(ref.item, ref.si);
+        for (const box of ref.item.formulaBoxes || []) {
+          const inSentence = box._copyRange &&
+            box._copyRange.start < range.b && box._copyRange.end > range.a;
+          if (inSentence || box === sel.formulaBox) box.classList.add("formula-sel");
+        }
+      }
+    }
+    if (sel.formulaBox && sel.formulaBox.classList.contains("fbox"))
+      sel.formulaBox.classList.add("formula-sel");
   }
-  function setSelection(refs, silent) {
+  function setSelection(refs, silent, formulaBox) {
     if (!refs || !refs.length) { clearSelection(); return; }
-    sel = { sents: refs.slice() };
+    const formulaOnly = !!formulaBox && !formulaBox.matches(".mathbox.inline") &&
+      formulaBox.dataset.cls !== "InlineFormula";
+    sel = { sents: refs.slice(), formulaBox: formulaBox || null, formulaOnly };
     applySelRanges();
     if (!silent) { updateBar(); placeBar(); }
   }
@@ -780,6 +1449,7 @@
   // 重新套用标注(高亮/笔记下划线)并保留选中高亮
   function refreshSelectionVisual() {
     for (const it of selItems()) { setAnnoRanges(it); rebuildItem(it); }
+    paintFormulaMarks();        // 高亮刚改过：公式框也要跟着变（新高亮/取消高亮）
   }
   function selectSentence(item, si) {
     if (!item) return;
@@ -808,26 +1478,92 @@
     if (!a || !b) return null;
     return refsBetween(a, b);
   }
-  let dragging = false, dragAppliedAt = 0;
-  pagesEl.addEventListener("mousedown", e => { if (e.button === 0) dragging = true; });
-  document.addEventListener("mouseup", () => {
+  /* 按点取字符位置：浏览器自带的「坐标 → 最近的字符」。一次只看一个点，
+     不受拖拽路径影响（原生选区会被途中的空白重置，见 mouseup 的说明）。
+     入参是**视觉坐标**(clientX/clientY)，与 elementFromPoint 同口径。 */
+  function caretAtPoint(cx, cy) {
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(cx, cy);
+      return r ? { node: r.startContainer, off: r.startOffset } : null;
+    }
+    if (document.caretPositionFromPoint) {          // Firefox
+      const p = document.caretPositionFromPoint(cx, cy);
+      return p ? { node: p.offsetNode, off: p.offset } : null;
+    }
+    return null;
+  }
+  function refAtPoint(cx, cy, isEnd) {
+    const c = caretAtPoint(cx, cy);
+    const r = c && refFromNode(c.node, c.off, isEnd);
+    if (r) return r;
+    // 没命中到字符（点在空白/行尾外）→ 按几何位置找最近的一行
+    const near = nearestLineAt(cx / GZ(), cy / GZ());
+    return near ? { item: near.item, si: fallbackSentence(near.item, near.y) } : null;
+  }
+  let dragging = false, formulaSelecting = false, dragFrom = null, dragAppliedAt = 0;
+  pagesEl.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".fbox, .mathbox.inline, .blk.has-math .mathbox")) {
+      formulaSelecting = true;
+      dragging = false;
+      dragFrom = null;
+      return;
+    }
+    formulaSelecting = false;
+    dragging = true;
+    // 拖拽起点：mouseup 时按几何位置自己算范围（不信任原生选区，见下）
+    dragFrom = e.target.closest(".img, .pagenum") ? null : { x: e.clientX, y: e.clientY };
+  });
+  document.addEventListener("mouseup", e => {
+    if (formulaSelecting) {
+      formulaSelecting = false;
+      return;
+    }
     if (!dragging) return;
     dragging = false;
-    const refs = refsFromNativeSelection();
-    if (!refs) return;                       // 没拖出跨句范围 → 交给 click 当单句选中
-    setSelection(refs);                      // 原生选中的首尾 → 吸附到整句
+    const from = dragFrom; dragFrom = null;
+    const moved = !!from && Math.abs(e.clientX - from.x) + Math.abs(e.clientY - from.y) > 3;
+    // ⚠️ 不能只信原生选区：拖拽途中一旦指针扫过「没有文字的空白」（行间空隙、公式空位、
+    // 相邻块的空白框），浏览器会把原生选区的锚点重置到那一块 —— 起点所在的块就丢了
+    // （复现：从 p1b45 拖到 p1b47，最后只选中 p1b47）。所以拖动过就按两端的**坐标**
+    // 各取一句，再取阅读顺序里两者之间的整句区间。
+    let refs = null;
+    if (moved && !(e.target && e.target.closest && e.target.closest(".img, .pagenum"))) {
+      const a = refAtPoint(from.x, from.y, false);
+      const b = refAtPoint(e.clientX, e.clientY, true);
+      if (a && b) refs = refsBetween(a, b);
+    }
+    if (!refs) refs = refsFromNativeSelection();   // 没拖动 / 取不到端点 → 退回原生选区
+    if (!refs) return;                             // 没拖出句子范围 → 交给 click 当单句选中
+    setSelection(refs);                            // 首尾 → 吸附到整句
     dragAppliedAt = Date.now();
     const s = window.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges();
   });
 
   pagesEl.addEventListener("click", e => {
     if (Date.now() - dragAppliedAt < 350) return;   // 刚用拖拽选完，别被 click 收成单句
+    const formula = e.target.closest(".fbox, .mathbox.inline, .blk.has-math .mathbox");
+    if (formula) {
+      const target = formulaSelectionTarget(formula);
+      if (target) setSelection([target.ref], false, target.host);
+      else clearSelection();
+      return;
+    }
+    // 图 / 页码不是文字：点它们照旧清掉选中
+    if (e.target.closest(".img, .pagenum")) { clearSelection(); return; }
     const blk = e.target.closest(".blk");
-    if (!blk) { clearSelection(); return; }
-    const item = findItem(blk.dataset.id);
-    if (!item) return;
+    let item = null, hitY = e.clientY / GZ();       // hitY 是布局坐标(见文件顶部坐标说明)
+    if (blk) {
+      item = findItem(blk.dataset.id);
+    } else {
+      // 块框里没画字的地方（行间空隙、行尾空白、公式空位）target 是 .page：
+      // 按几何位置找回最近的一行继续选，别平白把已有的选中清掉。
+      const near = nearestLineAt(e.clientX / GZ(), hitY);
+      if (near) { item = near.item; hitY = near.y; }
+    }
+    if (!item || item.noSelect) { clearSelection(); return; }   // noSelect：表格等无句子块
     const ci = caretInfo();
-    const si = (ci && ci.item === item) ? sentOf(item, ci.idx) : fallbackSentence(item, e.clientY / GZ());
+    const si = (ci && ci.item === item) ? sentOf(item, ci.idx) : fallbackSentence(item, hitY);
     // Shift+点击：从当前选区首句扩展到点中的这句
     if (e.shiftKey && selCount()) setSelection(refsBetween(selAnchor(), { item, si }));
     else selectSentence(item, si);
@@ -853,7 +1589,8 @@
     if (!anchor) return;
     fbar.hidden = false;
     if (!keepMenu) hideHmenu();
-    const r = anchor.item.el.getBoundingClientRect();
+    const formula = sel.formulaBox && sel.formulaBox.isConnected ? sel.formulaBox : null;
+    const r = formula ? formula.getBoundingClientRect() : anchor.item.el.getBoundingClientRect();
     let top = r.top - 48;
     if (top < 60) top = r.bottom + 8;
     fbar.style.top = Math.max(60, top) + "px";
@@ -892,8 +1629,14 @@
     if (a === "close") clearSelection();
     else if (a === "copy") {
       const n = selCount();
-      // 公式块没有“句子”：它的 canonical 是 PDF/OCR 抽出的字形串，复制时换成 LaTeX 源码
-      const s = sel.sents.map(r => mathTexOf(r.item) || sentenceText(r.item, r.si)).join(" ");
+      const formula = sel.formulaBox;
+      const formulaOnly = formula && !formula.matches(".mathbox.inline") &&
+        formula.dataset.cls !== "InlineFormula";
+      const mathItem = formulaOnly && formula.closest(".blk")
+        ? findItem(formula.closest(".blk").dataset.id) : null;
+      const s = formulaOnly
+        ? (formula.dataset.latex || mathTexOf(mathItem))
+        : sel.sents.map(r => mathTexOf(r.item) || copySentenceText(r.item, r.si)).join(" ");
       navigator.clipboard.writeText(s).then(() => toast(n > 1 ? "已复制 " + n + " 句" : "已复制该句"));
     } else if (a === "trans") {
       if (selCount() > 1) translateSelected();
@@ -952,7 +1695,10 @@
       }
       // 与整段译文互斥：切换成“所选句译文”模式，收起所有整段译文卡（译文仍在缓存里，可随时再开）
       closeAllTrans(false);
-      const card = { key, itemId: frags[0].item.id, siFrom: frags[0].si,
+      // 卡片挂到**最后一个被选句子**的块下（不是第一句）：连选多句时若挂第一句，
+      // 卡片会插在所选句中间，后面的正文看起来像被错了位。
+      const last = frags[frags.length - 1];
+      const card = { key, itemId: last.item.id, siFrom: last.si,
                      text: parts.join("\n\n") };
       selTransList.push(card);
       renderSelTrans();
@@ -992,7 +1738,7 @@
     }
     const byItem = new Map();
     for (const t of selTransList) {
-      const it = findItem(t.itemId);
+      const it = selTransHost(t);
       if (!it) continue;
       if (!byItem.has(it)) byItem.set(it, []);
       byItem.get(it).push(t);
@@ -1003,6 +1749,14 @@
       it.stbox.hidden = false;
       syncExp(it);
     }
+  }
+  function selTransHost(t) {
+    /* 卡片挂在哪个块下：**最后一个被选句子**的块。
+       `key` 里记着全部片段（`<块id>#<起>-<止>` 用 `|` 相连），所以连早期存的
+       卡片（item_id 还是第一句的块）也能落到正确位置；解析不出来再退回 item_id。 */
+    const frag = String(t.key || "").split("|").pop() || "";
+    const id = frag.split("#")[0];
+    return (id && findItem(id)) || findItem(t.itemId);
   }
   function selTransCard(item, t) {
     const card = el("div", "card-in stsec");
@@ -1144,6 +1898,24 @@
     if (showZhOn) { enterParaTransMode(); openAllTrans(); }
     else closeAllTrans();
   });
+  /* 设置里换了“翻译目标语言”：服务端的译文缓存与“所选句译文”卡都按语言分开存，
+     这里把上一个语言的译文清掉、按新语言重新拉一次，页面上不留旧语言的译文 */
+  document.addEventListener("paper-target-lang", async (e) => {
+    for (const id in zh) delete zh[id];
+    noZh.clear();
+    for (const id in itemById) { const it = itemById[id]; if (it && it.tsec) it.tsec.textContent = ""; }
+    try {
+      Object.assign(zh, await api("/api/doc/" + docId + "/zh_all").catch(() => ({})));
+      selTransList = await loadSelTrans();
+    } catch (err) { /* 拉不到就当还没翻译，不影响阅读 */ }
+    renderSelTrans();
+    if (showZhOn) openAllTrans(); else closeAllTrans();
+    relayoutAll();
+    updateBar();
+    const name = (e.detail && e.detail.name) || "";
+    toast(name ? ("翻译目标语言已改为 " + name + "，本页译文已按新语言刷新")
+               : "翻译目标语言已切换，本页译文已刷新");
+  });
   $("btnPageTrans").addEventListener("click", async () => {
     const pi = currentPageIndex();
     const items = pages[pi] ? pages[pi].items.filter(i => i.kind === "blk") : [];
@@ -1257,6 +2029,8 @@
     applyNoteChrome(t);
     layoutAi();
     pages.forEach((pg, pi) => relayoutPage(pi));
+    // 版式（含公式框位移）刚定下来：高亮公式框的“命中”是按几何算的，要重新对一遍
+    paintFormulaMarks();
   }
 
   /* 文末面板：宽度不够时从“左右”变“上下”（.ai-stacked），上下结构下两块等宽。
@@ -1289,7 +2063,7 @@
       const si = first ? keyParts(first.block_id).si : 0;
       const ld = it.linesData[lineOfChar(it, sentRange(it, si).a)] || it.linesData[0];
       it.noteDy = ld ? ld.dy : 0;                    // 句子首行相对块顶的偏移
-      it.noteY = it.y + it.noteDy + (it.shift || 0);// 目标页面 y(含译文顶开的位移)
+      it.noteY = it.y + it.noteDy + (it.syShift || 0) + (it.shift || 0);  // 目标页面 y（含内容避让 + 译文顶开）
     }
     boxes.sort((a, b) => a.noteY - b.noteY);
     let cursor = -Infinity;
@@ -1316,6 +2090,15 @@
       it.expH = it.exp.offsetHeight;
       it.expW = Math.max(it.w, inlineNotes ? it.nbox.offsetWidth : 0);
     }
+    // ⓪ Surya 块的内容避让（settleSuryaVertical 精确计算）：直接改 style.top，
+    //    与卡片顶开（transform）互不干扰，幂等（同一布局内 syShift 不变）。
+    //    ⚠️ 不走 ①/② 的位移链：那条链是给卡片设计的近似“同化”传播，会把
+    //    精确的避让量再放大，反而让下方块被多推、造成新的重叠（第 2 页实测）。
+    for (const it of items) {
+      if (it.kind !== "blk" || it.syShift === undefined) continue;
+      it.el.style.top = (it.y + it.syShift).toFixed(1) + "px";
+    }
+    // ① 直接位移：每张展开卡把**同栏**（x 重叠）、位于其下方的内容顶开
     for (const it of items) {
       let shift = 0;
       const bottom = it.kind === "blk" ? it.y + it.contentH : it.y + it.h;
@@ -1325,7 +2108,56 @@
         if (ob <= bottom + 0.5 && xOverlap(o, it, o.expW)) shift += o.expH;
       }
       it.shift = shift;
-      it.el.style.transform = shift ? "translateY(" + shift + "px)" : "";
+    }
+    // ② 传递位移：被顶开的**宽元素**（典型是跨栏插图）会把压在它正下方的内容也带下去。
+    //    例：右栏的卡片把下面的插图顶下去 154px，插图下方那半栏的标题/页码 x 不与
+    //    卡片栏重叠，①不会动它们 —— 结果就被下移的插图盖住。这里让「某个已位移元素
+    //    下方 + 横向相交」的元素至少取那个位移；取 max（①里已计入的卡片高度不重复
+    //    叠加），迭代到收敛（位移只增不减且有上界，必然收敛）。
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const it of items) {
+        const bottom = it.kind === "blk" ? it.y + it.contentH : it.y + it.h;
+        for (const m of items) {
+          if (m === it || m.shift <= it.shift) continue;
+          const mb = m.kind === "blk" ? m.y + m.contentH : m.y + m.h;
+          if (mb <= bottom + 0.5 && xOverlap(m, it)) { it.shift = m.shift; grew = true; }
+        }
+      }
+    }
+    for (const it of items) {
+      it.el.style.transform = it.shift ? "translateY(" + it.shift + "px)" : "";
+    }
+
+    /* 页面级公式框覆盖层（`.fbox`，见 r2-math.js）不在 `items` 里，但也得跟着
+       “顶开版式”走：否则译文/笔记卡把正文顶下去之后，公式还钉在原坐标 ——
+       表现就是公式叠在卡片上、和下面的文字错位。判据与块一致，只是拿**公式中心**
+       比展开块底边（块末行的行内公式常常比行框高，底边会探到块底下面一点点，
+       用底边会把锚点块自己的公式也算进去）。
+       ⚠️ **没有展开卡时不能整个跳过**：必须把上一次的位移清掉 —— 否则卡片收起/
+       删除后正文弹回原位、公式却留在下方。`anyExp` 只用来省掉“本来就没有位移”
+       时的量测。 */
+    const anyExp = items.some(o => o.expH);
+    for (const fb of pg.el.querySelectorAll(".fbox")) {
+      if (!anyExp && !fb.style.transform) continue;
+      const top = parseFloat(fb.style.top) || 0;
+      const fh = parseFloat(fb.style.height) || 0;
+      const cy = top + fh / 2;
+      const fx = parseFloat(fb.style.left) || 0;
+      const fw = parseFloat(fb.style.width) || 0;
+      let shift = 0;
+      for (const o of items) {
+        if (!o.expH || o.kind !== "blk") continue;
+        if (o.y + o.contentH <= cy + 0.5 && xOverlap(o, { x: fx, w: fw }, o.expW))
+          shift += o.expH;
+      }
+      for (const m of items) {                    // ② 传递位移（与 items 同一套规则）
+        if (m.shift <= shift) continue;
+        const mb = m.kind === "blk" ? m.y + m.contentH : m.y + m.h;
+        if (mb <= cy + 0.5 && xOverlap(m, { x: fx, w: fw })) shift = m.shift;
+      }
+      fb.style.transform = shift ? "translateY(" + shift + "px)" : "";
     }
 
     const noteBottom = noteSide ? layoutSideNotes(items) : 0;
@@ -1333,8 +2165,9 @@
     let maxB = pg.h;
     for (const it of items) {
       const base = it.kind === "blk" ? it.y + it.contentH : it.y + it.h;
-      let b = base + (it.shift || 0);
-      if (it.expH) b = Math.max(b, it.y + it.contentH + (it.shift || 0) + it.expH);
+      const sy = it.syShift || 0;         // Surya 内容避让量（走 style.top，不在 shift 里）
+      let b = base + sy + (it.shift || 0);
+      if (it.expH) b = Math.max(b, it.y + it.contentH + sy + (it.shift || 0) + it.expH);
       if (b > maxB) maxB = b;
     }
     if (noteBottom > maxB) maxB = noteBottom;   // 右侧笔记卡也不能压到下一页
@@ -1391,11 +2224,15 @@
      · META / anno 用 getter —— 换论文 / 重拉批注时会整体替换，模块里要每次取最新值；
      · canWrite 声明在**本段之后**（共享权限那一段），装配这一刻还在 TDZ，
        所以包一层转发，等真正调用时再去读它。
+     · renderInlineMath / katexReady / ensureKatex 来自 r2-math（本段之前已装配）——
+       AI 气泡与整理条目按 Markdown 渲染（r2-md.js）后，里面的 $…$ / \(…\) 数学
+       交给它们就地换成 KaTeX（没加载过则懒加载）。
      原来那段里 AI 自己的状态（aiSummary / aiChat / aiBusyWhat / aiEdit / …）
      随模块一起搬走了，不再占用本文件的作用域。 */
   const { maybeAutoSummarize, syncAiButtons, jumpToAi, renderTocAi, loadAi } = R2Ai({
     $, docId, findItem, keyParts, pageOfItem, scrolled, toScrollTop, needWrite, anchorProbe,
     canWrite: (...a) => canWrite(...a),
+    renderInlineMath, katexReady, ensureKatex,
     get META() { return META; },
     get anno() { return anno; },
   });
@@ -1481,17 +2318,16 @@
         const lb = r.latex_blocks || [0, 0];
         toast("版式已重新解析（" + (r.parser || "?") + "）");
         showNotice("重解析完成：后端 " + (r.parser || "?") + "，页数 " + r.pages[0]
-          + "→" + r.pages[1] + "，文字块改动 " + r.changed + " 处，"
-          + "公式 行内" + (info.math_inline || 0) + "/独立" + (info.math_display || 0)
-          + "，带公式的块 " + lb[0] + "→" + lb[1]
-          // 定位质量：字体判据标出的公式行里，还剩多少行是**没被覆盖**的(字形仍在正文里)。
-          // 它降不下去时基本就是 OCR 那些 LaTeX 没能定位上，见 pdf_parser.math_anchor_missed。
-          + (info.math_font_lines
-            ? ("；公式定位 " + (info.math_font_used || 0) + "/" + info.math_font_lines
-               + " 行，未覆盖 " + (info.math_leftover_lines || 0) + " 行"
-               + (info.math_anchor_missed ? ("（锚点失败 " + info.math_anchor_missed + " 条）") : ""))
+          + "→" + r.pages[1] + "，文字块改动 " + r.changed + " 处"
+          // 公式：本流程把公式字形擦成等长空格（页面上那段地方就是空白）。
+          // `formula_chars` = 被擦掉的字形数，`formula_spans` = 擦除的 run 段数。
+          + (info.formula_chars
+            ? ("，擦除公式字形 " + info.formula_chars + " 字 / "
+               + (info.formula_spans || 0) + " 段")
             : "")
+          + (lb[1] ? ("，带 latex 的块 " + lb[0] + "→" + lb[1]) : "")
           + "；笔记与译文都保留。正在刷新…", false);
+        setTimeout(() => location.reload(), 1200);
         setTimeout(() => location.reload(), 1200);
       } catch (err) {
         showNotice("重新解析失败：" + err.message, true);
@@ -1500,6 +2336,15 @@
         btnReparse.textContent = old;
       }
     });
+  }
+
+  /* “所选句译文”卡存在服务端（按目标语言分开存）：拉下来映射成前端结构 */
+  async function loadSelTrans() {
+    const cards = await api("/api/doc/" + docId + "/seltrans").catch(() => []);
+    return (cards || []).map(c => ({
+      key: c.key, itemId: c.item_id || String(c.key || "").split("#")[0],
+      siFrom: c.si_from || 0, text: c.text || "",
+    })).filter(c => c.key && c.text);
   }
 
   async function init() {
@@ -1518,11 +2363,7 @@
       const zhMap = await api("/api/doc/" + docId + "/zh_all").catch(() => ({}));
       Object.assign(zh, zhMap);
       // “所选句译文”卡是存在服务端的：重新登录/刷新后原样恢复（片段译文不在 zh 里，靠它回来）
-      const selCards = await api("/api/doc/" + docId + "/seltrans").catch(() => []);
-      selTransList = (selCards || []).map(c => ({
-        key: c.key, itemId: c.item_id || String(c.key || "").split("#")[0],
-        siFrom: c.si_from || 0, text: c.text || "",
-      })).filter(c => c.key && c.text);
+      selTransList = await loadSelTrans();
       // 两种译文互斥：恢复出来的“所选句译文”会占坑，就把“显示译文”勾去掉，
       // 让勾选状态和实际显示一致（服务端存的偏好不动，清掉卡片后再勾就行）
       if (selTransList.length) { $("chkShowZh").checked = false; showZhOn = false; }
@@ -1537,12 +2378,18 @@
       if (!cfg.ready) {
         tips.push("⚠️ 未配置翻译服务：译文功能不可用。点右上角「⚙ 设置 → LLM 服务」填写服务地址与 API Key（也可在 config.json 里配），或安装 deep-translator 用免费兜底。");
       }
-      // “OCR 服务就绪但实际仍在用 PyMuPDF”是静默回退，最容易当成配置没生效；
-      // 这里用一条提示把它拽到明面上（详细原因在 ⚙ 设置 → 存储 / OCR 里）。
+      // 图片/公式检测（detection-service-group）与所选后端不匹配时提示一声。
       const pr = cfg && cfg.parser;
-      if (pr && pr.effective === "pymupdf" && (pr.paddle_ready || pr.surya_ready)) {
-        const who = pr.paddle_ready ? "PaddleOCR-VL" : "Surya";
-        tips.push("⚠️ " + who + " 解析服务已就绪，但当前仍用 PyMuPDF 本地解析。" +
+      if (pr && pr.backend === "surya" && pr.surya_ready !== true) {
+        // surya 后端是“全有或全无”：服务/客户端任一没就绪，上传与重解析都会失败
+        tips.push("⚠️ 解析后端现为 surya，但 Surya 2 还未就绪：" + (pr.surya_message || "") +
+          "（上传 / 重解析会失败；点右上角「⚙ 设置 → 存储 / OCR」查看）");
+      } else if (pr && pr.backend === "pymupdf" && pr.detection_service_group_ready) {
+        tips.push("⚠️ detection-service-group 已就绪，但解析后端选的是 pymupdf（不跑图片/公式检测）——" +
+          "要显示 Figure 图片和公式，请在「⚙ 设置 → 存储 / OCR」里选 auto 或 detection_service_group。");
+      } else if (pr && (pr.backend === "auto" || pr.backend === "detection_service_group") &&
+                 pr.detection_service_group_ready === false) {
+        tips.push("⚠️ detection-service-group 不可用：解析时会跳过 Figure 图片和公式框/LaTeX 增强。" +
           (pr.message || "") + "（点右上角「⚙ 设置 → 存储 / OCR」查看）");
       }
       showNotice(tips.join("　"), !!tips.length);

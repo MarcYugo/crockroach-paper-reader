@@ -11,7 +11,7 @@
 | `documents` | `doc_id` | 版式数据（原 doc.json），放在 `doc` 子字段里，查元数据时不带上它 |
 | `highlights` | `doc_id\\|block_id` | 一条高亮一个文档，增删改都是单文档原子操作 |
 | `notes` | 随机 id | 笔记，`(doc, block_id)` 唯一（同一句重复添加=更新，与原逻辑一致）；`by` = 写它的账号，共享论文里前端据此标识作者（回退到 JSON 实现时同一个字段落在 annotations.json） |
-| `translations` | `doc_id\\|文本哈希` | 译文缓存，一条一段 |
+| `translations` | `doc_id\\|译文缓存键` | 译文缓存，一条一段；键 = 「目标语言 + 文本」的哈希（见 `translate.cache_key`），所以同一段文的不同语言译文并存、互不覆盖 |
 | `images.files` / `images.chunks` | `"<doc_id>/<fname>"` | **插图本体**（GridFS 桶）：解析出来的 PNG 也进库，服务重启/换容器/换机器都不会再丢图 |
 | `users` | 用户名(小写) | 账号，口令为 PBKDF2 加盐哈希 |
 | `sessions` | 会话 token | 登录会话，带 TTL 索引自动过期 |
@@ -20,11 +20,17 @@
 插图与版式数据同在库里（`images` 是 GridFS 桶，`_id = "<doc_id>/<fname>"`），
 所以 `mongodump` 一把就能把论文连图一起备走；磁盘上的 `data/docs/<id>/images/`
 只在 JSON 回退模式下使用（读取时仍兼容老数据，见 `get_image()`）。
+
+**版式文档的内存缓存带跨进程自动失效**：`documents` 每条记录带 `rev`
+（写入版本号，见 `save_doc`），`read_doc` 每次先用**轻查询**比对 rev，
+一致才用缓存 —— 重解析、迁移脚本、另一个 worker/实例写了库，本进程下次
+读取会自动重读新数据，**不需要重启服务或手动清缓存**。
 """
 from __future__ import annotations
 
 import shutil
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -81,7 +87,8 @@ class MongoStore:
         self.img_files = db[self.IMG_BUCKET + ".files"]
         self.img_chunks = db[self.IMG_BUCKET + ".chunks"]
         self._lock = threading.RLock()
-        self._doc_cache: OrderedDict[str, dict] = OrderedDict()
+        # {doc_id: (rev, doc)} —— rev 比对实现跨进程自动失效（见 save_doc/read_doc）
+        self._doc_cache: OrderedDict[str, tuple] = OrderedDict()
         self.ensure_indexes()
 
     def ensure_indexes(self) -> None:
@@ -216,27 +223,45 @@ class MongoStore:
         self.delete_images(doc_id)          # 插图在 GridFS，别漏删
 
     # ---------------- 版式文档 ----------------
+    # 缓存条目 = (rev, doc)：rev 是库里的写入版本号（save_doc 每次写入新值），
+    # read_doc 先做一次轻查询比对它 —— 任何进程写了库（重解析、脚本工具、
+    # 另一个 worker/实例），这里都会**自动**发现并重读。
     def save_doc(self, doc_id: str, doc: dict) -> None:
-        self.documents.replace_one({"_id": doc_id}, {"doc": doc}, upsert=True)
-        self._cache_put(doc_id, doc)
+        rev = time.time_ns()               # 每次写入一个新版本号
+        self.documents.replace_one({"_id": doc_id},
+                                   {"doc": doc, "rev": rev}, upsert=True)
+        self._cache_put(doc_id, doc, rev)
 
-    def _cache_put(self, doc_id: str, doc: dict) -> None:
+    def _cache_put(self, doc_id: str, doc: dict, rev: int | None) -> None:
         with self._lock:
-            self._doc_cache[doc_id] = doc
+            self._doc_cache[doc_id] = (rev, doc)
             self._doc_cache.move_to_end(doc_id)
             while len(self._doc_cache) > self._CACHE_MAX:
                 self._doc_cache.popitem(last=False)
 
     def read_doc(self, doc_id: str) -> dict:
+        """读版式文档（带跨进程自动失效的内存缓存）。
+
+        文档在库里带 `rev`（写入版本号）：这里每次先做一次**轻查询只取 rev**，
+        与缓存上的 rev 不一致（或没有缓存）才重读全量 —— 重解析、脚本工具、
+        另一个 worker/实例写完库后，本进程的下一个请求就会自动拿到新数据，
+        **不需要重启服务或手动清缓存**。历史文档没有 rev（读到 None），
+        经新代码 save_doc 写一次就会带上（写路径已全部收敛到 save_doc）。
+        """
+        row = self.documents.find_one({"_id": doc_id}, {"rev": 1})
+        if not row:
+            raise FileNotFoundError(doc_id)
+        rev = row.get("rev")
         with self._lock:
-            if doc_id in self._doc_cache:
+            ent = self._doc_cache.get(doc_id)
+            if ent and ent[0] == rev:
                 self._doc_cache.move_to_end(doc_id)
-                return self._doc_cache[doc_id]
-        row = self.documents.find_one({"_id": doc_id}, {"doc": 1})
+                return ent[1]
+        row = self.documents.find_one({"_id": doc_id}, {"doc": 1, "rev": 1})
         if not row or not row.get("doc"):
             raise FileNotFoundError(doc_id)
         doc = row["doc"]
-        self._cache_put(doc_id, doc)
+        self._cache_put(doc_id, doc, row.get("rev"))
         return doc
 
     def clear_cache(self, doc_id: str | None = None) -> None:
@@ -314,6 +339,7 @@ class MongoStore:
     def get_seltrans(self, doc_id: str) -> list[dict]:
         return [{"key": d.get("key"), "item_id": d.get("item_id"),
                  "si_from": d.get("si_from"), "text": d.get("text"),
+                 "lang": d.get("lang"),
                  "created_at": d.get("created_at")}
                 for d in self.seltrans.find({"doc": doc_id}).sort("created_at", 1)]
 
@@ -324,6 +350,7 @@ class MongoStore:
             {"_id": _key(doc_id, key), "doc": doc_id, "key": key,
              "item_id": card.get("item_id"), "si_from": card.get("si_from") or 0,
              "text": card.get("text") or "",
+             "lang": card.get("lang"),
              "created_at": card.get("created_at") or _now()},
             upsert=True)
         return self.get_seltrans(doc_id)

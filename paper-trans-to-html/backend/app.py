@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 import logging
 import os
@@ -26,13 +25,14 @@ from . import auth as auth_mod
 from . import converter
 from . import pdf_parser
 from . import records
-from .ai_read import (build_summary, clean_notes, clean_summary,
+from .ai_read import (article_text, build_summary, clean_notes, clean_summary,
                       notes_fingerprint, reply_chat_stream, summary_empty)
 from .db import StorageUnavailable, mongo
 from .storage import build as build_storage
 from .storage import rebuild as rebuild_storage
-from .translate import (TranslationUnavailable, Translator, extract_outline,
-                        looks_chinese, needs_translation, probe_llm)
+from .translate import (TranslationUnavailable, Translator, cache_key,
+                        extract_outline, is_target_language, needs_translation,
+                        normalize_lang, probe_llm, resolve_lang)
 
 log = logging.getLogger("uvicorn.error")
 
@@ -60,8 +60,8 @@ else:
 def _translator_for(username: str) -> Translator:
     """按「本账号设置 > 环境变量 > config.json > 默认」装配**这个账号**的翻译服务。
 
-    LLM 配置（地址/Key/模型）跟论文数据一样按账号隔离：A 存的 Key 只有 A 用得到，
-    B 读到的是 B 自己的（没有就落到环境变量 / config.json 的安装级默认）。
+    LLM 配置（地址/Key/模型）与**译文目标语言**都跟账号走：A 存的 Key 只有 A 用得到，
+    A 选的目标语言也只影响 A 的翻译（原文语言交给 LLM 识别）。
     """
     return Translator(config_file=settings.translator_config(username))
 
@@ -276,10 +276,6 @@ def _adopt_legacy_data() -> None:
 
 
 _adopt_legacy_data()      # 启动时跑一次：老数据不至于因为加 owner/按账号隔离而“消失”
-
-
-def _hash_text(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 # ---------------- 健康检查（容器用；无需登录，不碰数据库） ----------------
@@ -513,6 +509,9 @@ def api_save_llm(request: Request, payload: dict = Body(...)):
     - `api_key` 不传/传 null = 沿用该套已保存的 Key，传空串 = 清空；
     - `profile_id` 不传/传 `"new"` = 新建一套（超过上限报 400），传已存在的 id = 改写那一套。
     保存的这套会**立即成为当前生效配置**（相当于保存即切换）。
+
+    另外可选带 `target_lang`（译文目标语言，如 `zh-CN` / `en` / `ja`）：它存在
+    `users.prefs.target_lang`，与上面几套配置槽无关，改语言不会动 Key/地址/模型。
     """
     user = _require_user(request)
     name = user["username"]
@@ -523,6 +522,15 @@ def api_save_llm(request: Request, payload: dict = Body(...)):
     api_key = raw_key.strip() if isinstance(raw_key, str) else None
     # 传空串 = 用户明确要求清除本账号的 Key（允许，清除后会回落到环境变量/config.json/免费兜底）
     explicit_clear = raw_key == ""
+
+    # 目标语言先在写配置之前校验，免得“Key 写进去了、语言却报错”
+    raw_lang = payload.get("target_lang")
+    target_lang = None
+    if isinstance(raw_lang, str) and raw_lang.strip():
+        try:
+            target_lang = resolve_lang(raw_lang)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     raw_pid = payload.get("profile_id")
     profile_id = raw_pid.strip() if isinstance(raw_pid, str) else None
@@ -550,6 +558,8 @@ def api_save_llm(request: Request, payload: dict = Body(...)):
                           profile_id=profile_id, profile_name=profile_name)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if target_lang:
+        settings.set_target_lang(name, target_lang)
     tr = _translator_for(name)          # 无需重启：配置存在账号里，每次用都重新装配
     out = settings.describe(name, active_key=tr.key, status_text=tr.status_text)
     out.update({"ok": True, "ready": tr.ready})
@@ -662,6 +672,9 @@ async def api_doc_reparse(request: Request, doc_id: str,
         raise HTTPException(400, f"重新解析失败：{exc}") from exc
     finally:
         tmp.unlink(missing_ok=True)
+    # 版式已重写：清掉本进程的缓存条目兜底（其它进程/实例由 read_doc 的
+    # rev 校验自动失效），下个请求从库重读，刷新页面即可见新版式。
+    store.clear_cache(doc_id)
     log.info("版式已重新解析：%s → %s（带 latex 的块 %s）", doc_id,
              summary.get("parser"), summary.get("latex_blocks"))
     return {"ok": True, **summary}
@@ -848,15 +861,21 @@ def api_apply_anno(request: Request, doc_id: str, payload: dict = Body(...)):
 
 # ---------------- “所选句译文”卡片（跨刷新/重新登录保留） ----------------
 # 它们属于**阅读辅助**而不是共享内容：只读共享也能加/删自己的卡片。
+# 卡片上记着它是哪个目标语言的译文：换语言后旧语言的卡不再返回（切回原语言还在）。
 @app.get("/api/doc/{doc_id}/seltrans")
 def api_get_seltrans(request: Request, doc_id: str):
+    user = _require_user(request)
     _doc_access(request, doc_id)
-    return store.get_seltrans(doc_id)
+    lang = settings.target_lang(user["username"])
+    # 老卡片没有 lang 字段，按默认语言（简体中文）算，升级后不至于“卡片全没了”
+    return [c for c in store.get_seltrans(doc_id)
+            if normalize_lang(c.get("lang")) == lang]
 
 
 @app.post("/api/doc/{doc_id}/seltrans")
 def api_add_seltrans(request: Request, doc_id: str, payload: dict = Body(...)):
-    """保存一张所选句译文卡（同 key 覆盖）。"""
+    """保存一张所选句译文卡（同 key 覆盖），并记下它的目标语言。"""
+    user = _require_user(request)
     _doc_access(request, doc_id)
     key = (payload.get("key") or "").strip()
     text = payload.get("text") or ""
@@ -867,6 +886,7 @@ def api_add_seltrans(request: Request, doc_id: str, payload: dict = Body(...)):
         "item_id": payload.get("item_id") or key.split("#", 1)[0],
         "si_from": int(payload.get("si_from") or 0),
         "text": text,
+        "lang": settings.target_lang(user["username"]),
     })
 
 
@@ -894,8 +914,11 @@ def _outline_context(doc: dict, max_chars: int = 14000) -> str:
             if not t:
                 continue
             label = (blk.get("label") or "").lower()
-            heading_like = label in ("title", "heading", "section", "section_header",
-                                     "paragraph_title", "doc_title", "sub_title")
+            # Surya 分支的块自带归一化 kind（"heading"）；其它后端的老口径按标签名猜
+            heading_like = (blk.get("kind") == "heading"
+                            or label in ("title", "heading", "section", "section_header",
+                                         "sectionheader", "paragraph_title",
+                                         "doc_title", "sub_title"))
             if not heading_like and (len(t) > 120 or t.endswith((".", "。", ";", "；", ","))):
                 continue
             picked.append(t[:160])
@@ -974,6 +997,19 @@ def _ai_doc_notes(doc_id: str) -> list[dict]:
         return store.get_annotations(doc_id).get("notes") or []
     except Exception:
         return []
+
+
+def _ai_doc_article(doc_id: str) -> str:
+    """整篇正文（含每页公式 LaTeX），给 AI 对话当上下文。
+
+    读不到文档（老数据/存储异常）时返回空串：对话**照常可用**，只是不带全文语境。
+    """
+    try:
+        doc = store.read_doc(doc_id)
+    except Exception as exc:                # FileNotFoundError / 存储异常
+        log.warning("AI 对话：读取 %s 的文档失败，本次不带正文上下文（%s）", doc_id, exc)
+        return ""
+    return article_text(doc)
 
 
 def _ai_stale(rec: dict) -> bool:
@@ -1079,7 +1115,11 @@ def api_ai_summary_save(request: Request, doc_id: str, payload: dict = Body(...)
 
 @app.post("/api/doc/{doc_id}/ai/chat")
 async def api_ai_chat(request: Request, doc_id: str, payload: dict = Body(...)):
-    """就这篇论文聊一轮（带着笔记与已生成的整理），**流式**返回。
+    """就这篇论文聊一轮（带着**整篇正文 + 每页公式 LaTeX**、笔记与已生成的整理），
+    **流式**返回。
+
+    正文由服务端从文档数据里现拼（`_ai_doc_article`）：模型从一开始就看到全文，
+    而不是只有笔记；公式位置在正文里是空格，对应的 LaTeX 附在每页末尾。
 
     SSE：先把正文**逐段**推给前端（`{"type":"delta","text":"..."}`），
     避免"等整段生成完才一次性刷出来"的干等；最后一条
@@ -1097,12 +1137,13 @@ async def api_ai_chat(request: Request, doc_id: str, payload: dict = Body(...)):
     ai = dict(rec.get("ai") or {})
     notes = clean_notes(payload.get("notes")) or (ai.get("notes") or [])
     history = ai.get("chat") or []
+    article = await run_in_threadpool(_ai_doc_article, doc_id)
     try:
         # 这一步就把能提前发现的错误（没配 LLM / 没内容 / 参数不对）抛出来，
         # 而不是等 SSE 头已经发出去了才报错
         chunks = reply_chat_stream(tr, title=rec.get("title") or "", notes=notes,
                                    summary=ai.get("summary"), history=history,
-                                   message=message)
+                                   message=message, article=article)
     except TranslationUnavailable as exc:
         # 只给原因：前端会自己加上「对话失败：」前缀（不然会重复）
         raise HTTPException(503, str(exc)) from exc
@@ -1161,16 +1202,16 @@ def api_config(request: Request):
         "ready": tr.ready,
         "backend": tr.backend,
         "llm_owner": user["username"],
-        # PDF 解析后端：paddle(PaddleOCR-VL 推理服务，优先) / surya(Surya 2 推理服务)
-        # / pymupdf(本地兜底)；auto 时按 paddle > surya > pymupdf 生效
+        # PDF 解析后端：auto / detection_service_group（PyMuPDF 版式 + 图片/公式检测）
+        # / surya（整页 OCR：文字/公式/插图全用 Surya 数据）/ pymupdf（纯本地）
         "parser": pdf_parser.status(CONFIG_FILE),
         # 数据存储后端：mongo(MongoDB) / json(本地文件回退)
         "storage": _storage_state(),
     }
 
 
-# ---------------- PDF 解析(OCR)后端切换 ----------------
-PARSER_BACKENDS = ("auto", "paddle", "surya", "pymupdf")
+# ---------------- PDF 解析后端切换 ----------------
+PARSER_BACKENDS = ("auto", "detection_service_group", "surya", "pymupdf")
 
 
 def _write_parser_backend(backend: str) -> None:
@@ -1203,7 +1244,7 @@ def api_settings_parser_get(request: Request):
 
 @app.post("/api/settings/parser")
 def api_settings_parser_set(request: Request, payload: dict = Body(...)):
-    """切换 PDF 解析(OCR)后端：auto / paddle / surya / pymupdf。
+    """切换 PDF 解析后端：auto / detection_service_group / surya / pymupdf。
 
     安装级配置(写 config.json 的 parser.backend)，与本机所有账号共用。
     若环境变量 PDF_PARSER_BACKEND 已设置，它会覆盖这里的取值
@@ -1256,17 +1297,22 @@ def api_storage_reconnect(request: Request):
 
 @app.get("/api/doc/{doc_id}/zh_all")
 def api_zh_all(request: Request, doc_id: str):
-    """返回本论文所有已缓存译文的块 id -> 中文。"""
+    """返回本论文所有已缓存译文的块 id -> 译文（按**当前账号的目标语言**过滤）。
+
+    译文缓存是按「目标语言 + 块文本」存键的，换语言后这里自然只回新语言的译文。
+    """
+    user = _require_user(request)
     _doc_access(request, doc_id)
     try:
         doc = store.read_doc(doc_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, "文档数据缺失") from exc
+    lang = settings.target_lang(user["username"])
     cache = store.get_translations(doc_id)
     result: dict[str, str] = {}
     for page in doc.get("pages", []):
         for blk in page.get("texts", []):
-            zh = cache.get(_hash_text(blk.get("text", "")))
+            zh = cache.get(cache_key(blk.get("text", ""), lang))
             if zh:
                 result[blk["id"]] = zh
     return result
@@ -1277,9 +1323,13 @@ async def api_translate(request: Request, payload: dict = Body(...)):
     """批量翻译块。body: {"doc_id":..., "blocks":[{"id","text"}, ...]}
     命中缓存直接返回，避免重复计费。
 
+    译文语言用**当前账号**在设置里选的目标语言（`users.prefs.target_lang`，默认简体中文）；
+    原文语言不用配，交给 LLM 自己识别。译文缓存按「目标语言 + 文本」存键，换语言后不会
+    把上一门语言的译文当成本次结果，也不会覆盖它（切回去依然在）。
+
     返回三个字段，前端必须**区别对待**——把“这次没拿到”当成“不需要翻译”，
     会让这些段落在当前页面里永久变成"本段无译文"、再也点不动（踩过）：
-      - `results` 拿到译文的块（含“本来就是中文”的块，原样返回原文）
+      - `results` 拿到译文的块（含“本来就是目标语言”的块，原样返回原文）
       - `skipped` **本身不需要翻译**的块（空/极短/纯符号），可以不再重试
       - `failed`  这次**没拿到译文**的块（服务返回的条目缺失或为空），可重试
     """
@@ -1290,7 +1340,9 @@ async def api_translate(request: Request, payload: dict = Body(...)):
     if not blocks:
         return {"results": {}, "skipped": [], "failed": []}
     _doc_access(request, doc_id)                # 顺带完成归属校验
-    user = _require_user(request)               # LLM 配置按账号取
+    user = _require_user(request)               # LLM 配置与目标语言都按账号取
+    tr = _translator_for(user["username"])      # 用当前账号自己的配置 + 目标语言
+    lang = tr.target_lang
 
     cache = store.get_translations(doc_id)
     results: dict[str, str] = {}
@@ -1299,13 +1351,13 @@ async def api_translate(request: Request, payload: dict = Body(...)):
     for b in blocks:
         bid = b.get("id")
         text = (b.get("text") or "").strip()
-        if not needs_translation(text):
-            if looks_chinese(text):
-                results[bid] = text             # 已经是中文：原文即译文，不算失败
+        if not needs_translation(text, lang):
+            if is_target_language(text, lang):
+                results[bid] = text             # 已经是目标语言：原文即译文，不算失败
             else:
                 skipped.append(bid)             # 空/极短/纯符号：确实无需翻译
             continue
-        key = _hash_text(text)
+        key = cache_key(text, lang)
         if key in cache and cache[key]:
             results[bid] = cache[key]
         else:
@@ -1314,7 +1366,6 @@ async def api_translate(request: Request, payload: dict = Body(...)):
     failed: list[str] = []
     if todo:
         try:
-            tr = _translator_for(user["username"])      # 用当前账号自己的 LLM 配置
             translated = await run_in_threadpool(
                 tr.translate, [t["text"] for t in todo])
         except TranslationUnavailable as exc:

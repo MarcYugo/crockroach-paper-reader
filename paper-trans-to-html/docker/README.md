@@ -73,6 +73,11 @@ docker run --rm -v paper-app-data:/d -v $PWD:/b alpine tar czf /b/app-data.tgz -
 | `MONGO_URI` | 空 | 给了就用整串（云端 Atlas / 外部实例），优先级最高 |
 | `MONGO_APP_USER` / `_PASSWORD` / `_DB` | 从 `../mongo_configuration/.env` 继承 | 数据库账号，与 compose 里那份保持一致 |
 | `APP_STORAGE` | `auto` | `auto` 连不上库回退本地 JSON；`mongo` 连不上就启动失败；`json` 只用本地 |
+| `PDF_PARSER_BACKEND` | 空 | **留空 = 用网页「⚙ 设置」里保存的解析后端**（可随时切换）；填 `auto`/`detection_service_group`/`surya`/`pymupdf` 则强制锁定，会覆盖面板值（页面会提示）；旧值 `paddle` / `ftgroup` 仍被接受 |
+| `DETECTION_SERVICE_GROUP_URL` | `http://host.docker.internal:9003/v1` | detection-service-group（formula_table_service_group 的 router_service）地址；Figure 裁图与公式框 + LaTeX 由它提供 |
+| `DETECTION_SERVICE_GROUP_TIMEOUT` | `300` | 一次预测（检测+识别）整体超时（秒） |
+| `DETECTION_SERVICE_GROUP_KEEP_CROPS` | `true` | 是否保留公式兜底裁图；Figure 显示所需裁图始终开启 |
+| `PADDLE_OCR_URL` / `PADDLE_OCR_MODEL` / `PADDLE_OCR_API_KEY` | 见 compose | **保留配置**：PaddleOCR-VL 的旧客户端与配对链路已清空，这些变量不再被读取（仅作参考/回退） |
 | `ALLOW_SIGNUP` | `1` | 未登录自助注册；**暴露到公网请设 0** |
 | `DEEPSEEK_API_KEY` 等 | 空 | 安装级默认 LLM；每个账号还能在网页里各自覆盖 |
 | `MEM_LIMIT` / `MEM_RESERVATION` / `MEMSWAP_LIMIT` | 空（不限） | 容器内存硬上限 / 软保障 / “上限+swap”总配额（见第 8 节） |
@@ -94,7 +99,12 @@ APP_STORAGE=json docker compose up -d --build     # 数据落在 paper-app-data 
 
 - 镜像里**不含** `config.json` 与 `mongo_configuration/.env`（避免把密钥打进镜像）。要用项目里的
   `config.json`（含 `deepseek_api_key`、`parser` 段）请把 compose 里那行挂载取消注释 —— 
-  宿主机上该文件必须先存在，否则 Docker 会建出一个同名目录。
+  宿主机上该文件必须先存在，否则 Docker 会建出一个同名目录；**不要加 `:ro`**（网页里保存
+  解析后端 / LLM Key 时要写回它），属主给 uid 1000：
+  `touch ../config.json && sudo chown 1000:1000 ../config.json`。
+  不挂载也能跑，但网页里改的解析后端只存在容器内，`docker compose up -d --build` 重建后会回到默认。
+- 解析后端面板切换不生效时，先看页面上的 `⚠️ 已设置环境变量 PDF_PARSER_BACKEND` 提示：
+  环境变量优先级高于 `config.json`，删掉 `docker/.env` 里的那行再 `docker compose up -d` 重建即可。
 - `data/` 目录用的是**命名卷**，所以不会出现宿主机权限问题；要用目录挂载见第 4 节。
 - 服务默认只绑 `127.0.0.1`，容器与宿主机一致：**别直接暴露到公网**；要对外请加 HTTPS 反向代理，
   并把 `ALLOW_SIGNUP` 设为 `0`。

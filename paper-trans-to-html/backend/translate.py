@@ -1,4 +1,7 @@
-"""译文服务：英文段落 → 简体中文。
+"""译文服务：论文原文 → 目标语言（默认简体中文，可在「⚙ 设置」里改）。
+
+**原文语言不配、也不猜**：交给 LLM 自己识别（论文可能是英/日/德…）；这里只决定
+**译文用哪种语言**（见 `TARGET_LANGS`），以及按语言分开缓存译文（`cache_key`）。
 
 后端优先走 **OpenAI 兼容的 chat/completions**(DeepSeek / OpenAI / 自建中转都行，
 批量 + JSON 输出)，未配置 Key 时若安装了 deep-translator 则退化为免费 Google 翻译；
@@ -9,11 +12,13 @@
   base_url         服务地址，如 https://api.deepseek.com
   api_key          密钥(必需，缺失则退化 Google)
   model            模型名
+  target_lang      译文语言(target_lang，默认 zh-CN)，按账号存在 `users.prefs.target_lang`
 
 网页里首次登录填写的配置存在 `data/llm.json`，优先于环境变量与 config.json。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -23,19 +28,117 @@ import httpx
 
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]")
 _JUNK = re.compile(r"^[\s\d\W_]*$", re.UNICODE)  # 纯数字/标点/空白
+_KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")        # 日文假名
+_HANGUL = re.compile(r"[\u1100-\u11ff\uac00-\ud7af]")      # 韩文谚文
+_CYRILLIC = re.compile(r"[\u0400-\u04ff]")                 # 俄文（西里尔）
+_ARABIC = re.compile(r"[\u0600-\u06ff\u0750-\u077f]")      # 阿拉伯文
+_DEVANAGARI = re.compile(r"[\u0900-\u097f]")               # 印地文（天城文）
+
+# 翻译目标语言：键 -> 名称（也是提示词里对 LLM 的称呼）。前端下拉就照这个表生成，
+# 想加语言在这里加一行即可（Google 免费兜底也直接用它当目标语言代码）。
+TARGET_LANGS: dict[str, str] = {
+    "zh-CN": "简体中文",
+    "zh-TW": "繁體中文",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "印地语",
+}
+DEFAULT_TARGET_LANG = "zh-CN"
+
+# 常见别名（旧配置 / 浏览器地区码里可能出现 zh、zh-Hans、en-US 这类写法）
+_LANG_ALIAS = {
+    "zh": "zh-CN", "zh-hans": "zh-CN", "zh-sg": "zh-CN", "cn": "zh-CN",
+    "zh-hant": "zh-TW", "zh-hk": "zh-TW", "zh-mo": "zh-TW",
+}
+
+
+def resolve_lang(lang) -> str:
+    """把语言键解析成 `TARGET_LANGS` 里的规范键；不认识就抛 `ValueError`。"""
+    v = str(lang or "").strip()
+    if not v:
+        return DEFAULT_TARGET_LANG
+    low = v.lower()
+    if low in _LANG_ALIAS:
+        return _LANG_ALIAS[low]
+    base = low.split("-")[0]
+    for key in TARGET_LANGS:
+        if key.lower() in (low, base):
+            return key
+    raise ValueError(f"不支持的目标语言：{v}")
+
+
+def normalize_lang(lang) -> str:
+    """同 `resolve_lang`，但**认不出就退回默认**（读旧配置/脏数据时不至于报错）。"""
+    try:
+        return resolve_lang(lang)
+    except ValueError:
+        return DEFAULT_TARGET_LANG
+
+
+def lang_name(lang=None) -> str:
+    """目标语言的显示名（与提示词里对 LLM 的称呼一致）。"""
+    return TARGET_LANGS[normalize_lang(lang)]
+
+
+def cache_key(text: str, lang=None) -> str:
+    """译文缓存的键：**同一段文、不同目标语言互不覆盖**。
+
+    默认目标语言（简体中文）沿用原来的键（纯文本 sha1），历史缓存继续可用；其它语言
+    把语言键混进哈希里，换语言后不会命中上一门语言的旧译文，切回去也还在。
+    """
+    key = normalize_lang(lang)
+    raw = text if key == DEFAULT_TARGET_LANG else f"{key}\x00{text}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _ratio(pat: re.Pattern, text: str) -> float:
+    return len(pat.findall(text)) / max(len(text), 1)
 
 
 def looks_chinese(text: str) -> bool:
+    """像不像中文：汉字占比够高，且假名很少（日文里汉字也多，别把它当成中文）。"""
     if not text:
         return False
-    n = len(_CJK.findall(text))
-    return n > 0 and n / max(len(text), 1) > 0.12
+    return _ratio(_CJK, text) > 0.12 and _ratio(_KANA, text) < 0.05
 
 
-def needs_translation(text: str) -> bool:
+def is_target_language(text: str, lang=None) -> bool:
+    """粗判这段文字**已经是目标语言**（那就不用翻，免得把译文再翻一遍）。
+
+    只按字符脚本判断：中文 / 日文 / 韩文 / 俄文 / 阿拉伯文 / 印地文 能可靠区分；
+    英、法、德、西、葡同属拉丁字母，光看文本分不出来，一律返回 False —— 交给 LLM
+    自己判断（提示词里已要求“段落若已是目标语言就原样返回”）。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    key = normalize_lang(lang)
+    if key.startswith("zh"):
+        return looks_chinese(t)
+    if key == "ja":
+        return _ratio(_KANA, t) > 0.05
+    if key == "ko":
+        return _ratio(_HANGUL, t) > 0.05
+    if key == "ru":
+        return _ratio(_CYRILLIC, t) > 0.12
+    if key == "ar":
+        return _ratio(_ARABIC, t) > 0.12
+    if key == "hi":
+        return _ratio(_DEVANAGARI, t) > 0.12
+    return False
+
+
+def needs_translation(text: str, lang=None) -> bool:
     """这段文本**需不需要**送去翻译。
 
-    不需要的三种：空/极短、纯数字标点符号、本来就是中文。
+    不需要的三种：空/极短、纯数字标点符号、本来就是目标语言。
     接口层要靠它区分两种“没有译文”：
       - 不需要翻译 → 可以打上“无需翻译”的标记，以后不用再试；
       - 需要但没拿到（服务少返/返回空）→ 只是这次失败，**必须可重试**。
@@ -43,19 +146,24 @@ def needs_translation(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) < 2 or _JUNK.fullmatch(t):
         return False
-    return not looks_chinese(t)
+    return not is_target_language(t, lang)
 
 
-_PROMPT = (
-    "你是一名严谨的学术论文翻译助手，负责把英文翻译成简体中文。\n"
-    "规则：\n"
-    "1. 忠实原文、术语准确、语句通顺，保持原有段落结构。\n"
-    "2. 数字、公式、LaTeX、变量名、引用标记、URL 等原样保留。\n"
-    "3. 只做翻译，不要添加解释或额外说明。\n"
-    "用户会发送一个 JSON 对象：{\"texts\": [\"英文段落1\", \"英文段落2\", ...]}。\n"
-    "请返回一个 JSON 对象：{\"translations\": [\"译文1\", \"译文2\", ...]}，"
-    "数量与顺序必须与输入一一对应。只输出 JSON。"
-)
+def translation_prompt(lang=None) -> str:
+    """翻译提示词：**目标语言可配**，原文语言由 LLM 自行识别。"""
+    target = lang_name(lang)
+    return (
+        f"你是一名严谨的学术论文翻译助手，负责把论文原文翻译成{target}；"
+        "原文是什么语言你自己识别，不用问用户。\n"
+        "规则：\n"
+        "1. 忠实原文、术语准确、语句通顺，保持原有段落结构。\n"
+        "2. 数字、公式、LaTeX、变量名、引用标记、URL 等原样保留。\n"
+        f"3. 段落若已经是{target}，原样返回，不要改写、也不要另作翻译。\n"
+        "4. 只做翻译，不要添加解释或额外说明。\n"
+        "用户会发送一个 JSON 对象：{\"texts\": [\"段落1\", \"段落2\", ...]}。\n"
+        "请返回一个 JSON 对象：{\"translations\": [\"译文1\", \"译文2\", ...]}，"
+        "数量与顺序必须与输入一一对应。只输出 JSON。"
+    )
 
 
 class TranslationUnavailable(Exception):
@@ -202,6 +310,9 @@ class Translator:
                      or "https://api.deepseek.com").rstrip("/")
         self.model = cfg.get("model") or cfg.get("deepseek_model") or "deepseek-chat"
         self.timeout = float(cfg.get("timeout") or 120)
+        # 译文目标语言（原文语言交给 LLM 识别）：提示词与译文缓存的键都用它
+        self.target_lang = normalize_lang(cfg.get("target_lang") or cfg.get("lang"))
+        self.target_name = lang_name(self.target_lang)
         # 有 Key 且不是显式选 Google → 一律按 OpenAI 兼容接口调用；否则退免费兜底
         self.backend = "google" if (self.provider == "google" or not key) else "openai"
 
@@ -234,14 +345,14 @@ class Translator:
 
     # ---------------- 批量翻译 ----------------
     def translate(self, texts: list[str]) -> list[str]:
-        """输入与输出等长；无需翻译的项(中文/空/纯符号)原样或留空返回。"""
+        """输入与输出等长；无需翻译的项(已是目标语言/空/纯符号)原样或留空返回。"""
         jobs: list[tuple[int, str]] = []
         out: list[str] = [""] * len(texts)
         for i, t in enumerate(texts):
             t = (t or "").strip()
-            if not needs_translation(t):
-                # 无需翻译：空/极短/纯符号留空；已是中文的原样返回
-                out[i] = t if looks_chinese(t) else ""
+            if not needs_translation(t, self.target_lang):
+                # 无需翻译：空/极短/纯符号留空；已是目标语言的原样返回
+                out[i] = t if is_target_language(t, self.target_lang) else ""
                 continue
             jobs.append((i, t))
         if not jobs:
@@ -362,7 +473,7 @@ class Translator:
         body = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": _PROMPT},
+                {"role": "system", "content": translation_prompt(self.target_lang)},
                 {"role": "user", "content": json.dumps({"texts": ordered}, ensure_ascii=False)},
             ],
             "temperature": 0.2,
@@ -384,12 +495,12 @@ class Translator:
 
     # ---------------- Google 兜底 ----------------
     def _google(self, jobs: list[tuple[int, str]], out: list[str]) -> None:
-        """无需 Key，但翻译质量与稳定性都不如 LLM，仅作兜底。"""
+        """无需 Key，但翻译质量与稳定性都不如 LLM，仅作兜底（源语言同样交给它自动识别）。"""
         try:
             from deep_translator import GoogleTranslator
         except Exception as exc:
             raise TranslationUnavailable("未安装 deep-translator，无法使用免费翻译") from exc
-        tr = GoogleTranslator(source="en", target="zh-CN")
+        tr = GoogleTranslator(source="auto", target=self.target_lang)
         for pos, t in jobs:
             try:
                 out[pos] = (tr.translate(t) or "").strip()

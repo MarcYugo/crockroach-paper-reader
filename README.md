@@ -2,6 +2,18 @@
 
 > AI 辅助工具为 Deepseek-v4-flash/Deepseek-v4.1-flash + VScode copilot
 
+## 更新
+
+1. [26/10/8] surya 解析与pymupdf解析分离，解析pdf和渲染路径独立，解决了surya解析时公式和图片重影问题，增加表格渲染
+   <center>
+    <img src="./function_display/formulas.png" width=400px><img src="./function_display/tables.png" width=400px>
+   </center>
+2. [26/10/8] 增加了多种翻译目标语言
+   <center>
+   <img src="./function_display/translate.png" width=400px>
+   </center>
+3. [26/10/8] ai辅助阅读增加markdown样式渲染。
+
 ## Pdf 解析模块
 
 把论文 PDF 解析成**可还原原版式的数据**（文字块 + 插图，保留原坐标、字号、字体）。提供三种解析方式，输出结构一致，前端无需改动。
@@ -22,7 +34,7 @@
 - 表格保留结构，公式识别为 LaTeX 并渲染成数学公式；
 - 电子版论文仍以原始精确版式为准，扫描件用识别结果还原。
 
-### 3. Paddle-OCR
+<!-- ### 3. Paddle-OCR
 
 接入 **PaddleOCR-VL 推理服务**，推理速度最快，**推荐有显卡时使用**（部署方式见 `paddle_ocr_doc_parse_service`）。
 
@@ -30,7 +42,7 @@
 - 电子版论文保留原有精确版式，扫描件也能较好还原；
 - 个别页面识别失败不影响整篇，该页自动改用本地模式。
 
-> 三种方式都会避免插图与文字叠成“重影”。服务在运行时会自动优先使用，服务不可用则自动降级到本地模式，不会因此打不开论文。实测surya的图片和公式提取能力更好，paddle-ocr速度更快。
+> 三种方式都会避免插图与文字叠成“重影”。服务在运行时会自动优先使用，服务不可用则自动降级到本地模式，不会因此打不开论文。实测surya的图片和公式提取能力更好，paddle-ocr速度更快。 -->
 
 ## MongoDB 数据存储
 
@@ -48,7 +60,7 @@
 数据库没启动也能正常用：应用会自动回退到本地文件存储并在页面上提示，点「重试连接」即可切回数据库，不用重启服务。
 
 ## LLM 设置
-LLM 设置预设了OpenAI、Anthoripic、Deepseek和本地模式可供选择，实现上来说没有固定base url，可以任意选择，能够保存的设置只有3套。
+LLM 设置预设了OpenAI、Anthoripic、deepseek和本地模式可供选择，实现上来说没有固定base url，可以任意选择，能够保存的设置只有3套。
 
 ## 使用功能
 
@@ -78,5 +90,10 @@ LLM 设置预设了OpenAI、Anthoripic、Deepseek和本地模式可供选择，�
 
 ## TODO
 
-- [ ] 公式解析优化，重影缺失等问题
-- [ ] 图片显示，子图caption重影缺失等问题
+- [x] ~~公式解析优化，重影缺失等问题~~
+- [x] ~~图片显示，子图caption重影缺失等问题~~
+- [ ] pymupdf 本地解析优化
+- [ ] unlimited ocr 解析和渲染路径实现
+
+
+<!-- https://github.com/MarcYugo/crockroach-paper-reader -->

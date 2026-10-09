@@ -1,15 +1,15 @@
 """解析自检：不启动服务，直接验证“模块一 · 文档解析”。
 
 运行:
-    python tools/selftest.py [pdf路径] [--backend auto|paddle|surya|pymupdf] [--dpi 192]
+    python tools/selftest.py [pdf路径] [--backend auto|detection_service_group|surya|pymupdf] [--dpi 150]
 默认用 samples/sample.pdf；backend 留空时按 config.json / 环境变量(默认 auto)。
 输出: 实际使用的后端、页数、文字块/图片数、版面标签统计，
       并把图片落盘到 data/selftest_images/。
 
-auto 按 PaddleOCR-VL > Surya > PyMuPDF 的优先级选。单独验证某个 OCR 后端
-(先按对应服务的 README 把推理服务跑起来):
-    python tools/selftest.py samples/sample.pdf --backend paddle    # PaddleOCR-VL
-    python tools/selftest.py samples/sample.pdf --backend surya     # Surya 2
+文字版式由 PyMuPDF 本地抽取；auto/detection_service_group 时会再调 **detection-service-group**
+（formula_table_service_group 服务组）识别 Figure 图片与公式框 + LaTeX（先按服务组 README 起服务）:
+    python tools/selftest.py samples/latex_sample.pdf --backend detection_service_group
+    python tools/selftest.py samples/sample.pdf --backend pymupdf     # 纯本地、不连服务
 """
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ def main() -> None:
     ap.add_argument("pdf", nargs="?", default=None,
                     help="PDF 路径(默认 samples/sample.pdf)")
     ap.add_argument("--backend", default=None,
-                    choices=["auto", "paddle", "surya", "pymupdf"],
+                    choices=["auto", "detection_service_group", "surya", "pymupdf"],
                     help="解析后端；不传则按 config.json / 环境变量(默认 auto)")
-    ap.add_argument("--dpi", type=int, default=None, help="OCR 后端渲染 DPI")
+    ap.add_argument("--dpi", type=int, default=None, help="公式检测/识别渲染 DPI")
     args = ap.parse_args()
 
     pdf = Path(args.pdf) if args.pdf else BASE / "samples" / "sample.pdf"

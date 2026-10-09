@@ -1,6 +1,29 @@
-"""解析配置：后端选择/回退参数、环境变量覆盖、后端可用性探测、`status()`。
+"""解析配置：后端选择、环境变量覆盖、`status()`。
 
 见包文档 `backend/pdf_parser/__init__.py`。
+
+「文字版式后端」有两个实现：
+
+  * **PyMuPDF**（`backend_pymupdf.py`）：本地抽取文字层；Figure 图片和公式框由
+    **detection-service-group**（`formula_table_service_group` 服务组）提供
+    （见 `backend_detection_service_group.py`）；
+  * **Surya 2**（`../surya_parser.py` + `backend_surya.py`）：整页 OCR，文字 /
+    公式 / 插图全部来自 Surya，前端按 `parser === "surya"` 独立渲染。
+
+`status()` 的返回字段是对外契约（`/api/settings/parser` 与网页
+「⚙ 设置 → 存储 / OCR」面板都在读）：`detection_service_group_*` 与 `surya_*`
+是两套协议；`surya_ready` 是**真探测**（`GET /models`，超时 `PROBE_TIMEOUT`），
+`surya_client_ready` 是本机 surya-ocr 客户端依赖是否装好；两者都就绪才能用
+`surya` 后端解析。旧的 `paddle_*` 配置项**不再被读取**（键保留在 config.json 里，
+仅作记录/回退参考）。
+
+默认常量的家在各客户端模块：detection-service-group 在 `../detection_service_group.py`、
+Surya 在 `../surya_parser.py` —— config.json 里 `parser` 段的键与这里一一对应，
+改动作时两边一起对齐。
+
+⚠️ 命名沿革：这套配置以前叫 `ft_group_*` / `FT_GROUP_*`（后端取值 `ftgroup`）。
+改名后**旧键不再读取**，只在检测到旧键/旧环境变量时各加一条 warning（不影响运行）；
+后端取值 `ftgroup` 会被就地映射成 `detection_service_group`。
 """
 
 from __future__ import annotations
@@ -8,34 +31,62 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Optional
-from .. import paddle_parser
-from .. import surya_parser
+from typing import Any, Optional
+
+from ..detection_service_group import (
+    DEFAULT_TIMEOUT as DEFAULT_DETECTION_SERVICE_GROUP_TIMEOUT,
+    DEFAULT_URL as DEFAULT_DETECTION_SERVICE_GROUP_URL,
+    PROBE_TIMEOUT as DETECTION_SERVICE_GROUP_PROBE_TIMEOUT,
+    check_server as detection_service_group_check,
+    configured_dpi)
+from ..surya_parser import (
+    DEFAULT_BACKEND as DEFAULT_SURYA_BACKEND,
+    DEFAULT_IMAGE_LABELS,
+    DEFAULT_URL as DEFAULT_SURYA_URL,
+    PROBE_TIMEOUT as SURYA_PROBE_TIMEOUT,
+    check_server as surya_check,
+    client_ready as surya_client_ready)
 
 
 # =====================================================================
-#  解析配置(后端选择 / Surya 服务参数)
+#  解析配置(后端选择 / 服务参数)
 # =====================================================================
-CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
+# 仓库根的 `config.json`（与 `app.py` 的 `CONFIG_FILE` 是**同一个文件**）。
+# ⚠️ 拆包时在这里踩过坑：原来单文件 `backend/pdf_parser.py` 上溯 2 层正好是仓库根，
+#    拆成 `backend/pdf_parser/options.py` 后少了一层，指向了 `backend/config.json`
+#    —— 那个文件根本不存在。后果：网页面板“切换解析后端”写的是根 `config.json`，
+#    而解析时 `parse_pdf()` 读的是这个空路径（文件不存在就静默用默认值）→ 永远走
+#    `auto`。而 `app.py` 的 `status(CONFIG_FILE)` 传的是根路径，所以面板里显示的
+#    是“已保存的值”，实际解析却是另一回事 —— 表现就是“手动选后端不生效”。
+#    改这里时顺手对一下 `app.py::CONFIG_FILE`（两者必须指向同一份）。
+CONFIG_FILE = Path(__file__).resolve().parents[2] / "config.json"
+
+# 合法的后端取值。旧配置里的 `paddle` 会在 `load_options` 里映射成 `auto`，
+# `ftgroup` 会映射成 `detection_service_group`（都是历史上的取值，保留识别只为把
+# 老配置安顿好）。`surya` 是独立解析链（见 `backend_surya.py` / `../surya_parser.py`）。
+PARSER_MODES = ("auto", "detection_service_group", "surya", "pymupdf")
+
+# ---- 图片/公式检测增强(detection-service-group)与 Surya 的默认参数 ----
+# 默认常量住在各自的客户端模块（导入见文件头）：
+#   detection-service-group -> ../detection_service_group.py
+#   surya                   -> ../surya_parser.py（默认地址与 surya_doc_parse_service 端口一致）
 
 DEFAULT_OPTIONS: dict = {
-    "backend": "auto",                 # auto | paddle | surya | pymupdf
-    "surya_url": surya_parser.DEFAULT_URL,
-    "surya_backend": surya_parser.DEFAULT_BACKEND,   # llamacpp | vllm
-    "paddle_url": paddle_parser.DEFAULT_URL,
-    "paddle_model": paddle_parser.DEFAULT_MODEL,     # 服务端 --served-model-name
-    "paddle_prompt": paddle_parser.DEFAULT_PROMPT,   # OCR: / Table Recognition: ...
-    "paddle_max_tokens": paddle_parser.DEFAULT_MAX_TOKENS,  # 单页生成上限
-    "paddle_timeout": 300,             # 单页 OCR 请求超时(秒)
-    "paddle_api_key": "",              # 服务端设了 --api-key 时填
-    "paddle_ocr_math": True,           # 保留本地版式，用 OCR 的 LaTeX 补公式
-    "dpi": 192,                        # 页面渲染 DPI(paddle / surya 都用)
-    "image_labels": list(surya_parser.DEFAULT_IMAGE_LABELS),
+    "backend": "auto",                # auto | detection_service_group | surya | pymupdf
+    "surya_url": DEFAULT_SURYA_URL,
+    "surya_backend": DEFAULT_SURYA_BACKEND,
+    "detection_service_group_url": DEFAULT_DETECTION_SERVICE_GROUP_URL,       # 服务组地址
+    "detection_service_group_timeout": DEFAULT_DETECTION_SERVICE_GROUP_TIMEOUT,  # 预测超时(秒)
+    "detection_service_group_conf": 0.25,        # 检测置信度阈值(传给服务组)
+    "detection_service_group_enable": True,      # 用服务组补充公式框与 Figure 图片
+    "detection_service_group_keep_crops": True,  # 公式裁图兜底；Figure 显示所需裁图始终开启
+    "dpi": configured_dpi(),           # 与服务组直接渲染时读取同一份 config.json
+    "image_dpi": 0,                    # 插图裁剪的独立渲染 dpi（0=与 dpi 相同；只影响裁图清晰度）
+    "image_labels": list(DEFAULT_IMAGE_LABELS),
     "image_pad": 4,                    # 插图裁剪四周外扩像素
     "min_image_size": 32,              # 宽或高小于该值的插图丢弃
     "keep_html": True,                 # 把 block 的 html(表格/公式)写进 doc.json
-    "local_image_fallback": True,      # 某页没识别到图时，用 PyMuPDF 兜底找图
-    "fallback": True,                  # Surya 失败时回退 PyMuPDF
+    "fallback": True,                  # [已失效] 旧「OCR 失败回退 PyMuPDF」开关
     # 去重影：插图里已经“烘焙”了文字时，不再把同一批文字叠在图上渲染
     "drop_text_in_images": True,       # 关掉则保留全部文字行(可能叠字)
     "text_in_image_overlap": 0.6,      # 行框被插图覆盖超过该比例 → 判为图内文字
@@ -45,16 +96,31 @@ _ENV_KEYS = {
     "backend": "PDF_PARSER_BACKEND",
     "surya_url": "SURYA_INFERENCE_URL",
     "surya_backend": "SURYA_INFERENCE_BACKEND",
-    "paddle_url": "PADDLE_OCR_URL",
-    "paddle_model": "PADDLE_OCR_MODEL",
-    "paddle_prompt": "PADDLE_OCR_PROMPT",
-    "paddle_max_tokens": "PADDLE_OCR_MAX_TOKENS",
-    "paddle_timeout": "PADDLE_OCR_TIMEOUT",
-    "paddle_api_key": "PADDLE_OCR_API_KEY",
-    "paddle_ocr_math": "PADDLE_OCR_MATH",
+    "detection_service_group_url": "DETECTION_SERVICE_GROUP_URL",
+    "detection_service_group_timeout": "DETECTION_SERVICE_GROUP_TIMEOUT",
+    "detection_service_group_conf": "DETECTION_SERVICE_GROUP_CONF",
+    "detection_service_group_enable": "DETECTION_SERVICE_GROUP_ENABLE",
+    "detection_service_group_keep_crops": "DETECTION_SERVICE_GROUP_KEEP_CROPS",
     "dpi": "PDF_PARSER_DPI",
+    "image_dpi": "PDF_PARSER_IMAGE_DPI",
     "image_labels": "PDF_PARSER_IMAGE_LABELS",
     "drop_text_in_images": "PDF_PARSER_DROP_TEXT_IN_IMAGES",
+}
+
+# 旧名（`ft_group_*` 时代）—— 改名后不再读取，检测到就提醒一次，避免「配了不生效」。
+_LEGACY_KEYS = {
+    "ft_group_url": "detection_service_group_url",
+    "ft_group_timeout": "detection_service_group_timeout",
+    "ft_group_conf": "detection_service_group_conf",
+    "ft_group_enable": "detection_service_group_enable",
+    "ft_group_keep_crops": "detection_service_group_keep_crops",
+}
+_LEGACY_ENV_KEYS = {
+    "FT_GROUP_URL": "DETECTION_SERVICE_GROUP_URL",
+    "FT_GROUP_TIMEOUT": "DETECTION_SERVICE_GROUP_TIMEOUT",
+    "FT_GROUP_CONF": "DETECTION_SERVICE_GROUP_CONF",
+    "FT_GROUP_ENABLE": "DETECTION_SERVICE_GROUP_ENABLE",
+    "FT_GROUP_KEEP_CROPS": "DETECTION_SERVICE_GROUP_KEEP_CROPS",
 }
 
 
@@ -74,6 +140,20 @@ def _to_bool(val, default: bool = False) -> bool:
     return default
 
 
+def _normalize_url(url: Any, default: str) -> str:
+    """补全默认地址，并去掉结尾多余的 '/'。"""
+    return (str(url or "").strip() or default).rstrip("/")
+
+
+def _resolve_image_labels(spec: Any = None) -> set[str]:
+    """None -> 默认图片类标签；'Picture,Figure' / ['Picture'] -> 集合"""
+    if not spec:
+        return set(DEFAULT_IMAGE_LABELS)
+    if isinstance(spec, str):
+        return {s.strip() for s in spec.split(",") if s.strip()}
+    return {str(s).strip() for s in spec if str(s).strip()}
+
+
 def load_options(config_file: Optional[Path] = None,
                  overrides: Optional[dict] = None,
                  backend: Optional[str] = None) -> tuple[dict, list[str]]:
@@ -91,20 +171,50 @@ def load_options(config_file: Optional[Path] = None,
             for key, val in section.items():
                 if key in opts and val is not None:
                     opts[key] = val
+            stale = [k for k in section if k in _LEGACY_KEYS]
+            if stale:
+                warnings.append(
+                    "解析配置里的 " + "、".join(sorted(stale)) + " 已改名为"
+                    " detection_service_group_*（本次未读取，请更新 config.json）")
+            if "local_image_fallback" in section:
+                warnings.append("解析配置项 local_image_fallback 已停用；"
+                                "Figure 图片只使用检测端（detection-service-group / "
+                                "Surya）返回的裁图")
         except Exception as exc:
             warnings.append(f"读取解析配置 {cfg_file} 失败，使用默认值：{exc}")
+    elif not os.environ.get(_ENV_KEYS["backend"]):
+        # 没配置文件、又没环境变量覆盖 → 这次解析用的是内置默认值。以前这里完全静默，
+        # 于是“手动选后端不生效”无从下手；现在跟着解析结果一起报出来(落在 doc.json
+        # 的 warnings 里)。
+        warnings.append(f"未找到解析配置 {cfg_file}，本次按默认配置解析"
+                        "(网页「设置 → 存储 / OCR」保存的值就写在这个文件里)")
 
     for key, env in _ENV_KEYS.items():
         val = os.environ.get(env)
         if val:
             opts[key] = val
+    stale_env = [k for k in _LEGACY_ENV_KEYS if os.environ.get(k)]
+    if stale_env:
+        warnings.append("环境变量 " + "、".join(sorted(stale_env))
+                        + " 已改名为 DETECTION_SERVICE_GROUP_*（本次未读取）")
     if overrides:
         opts.update({k: v for k, v in overrides.items() if v is not None and k in opts})
     if backend:
         opts["backend"] = backend
 
     mode = str(opts["backend"] or "").strip().lower()
-    if mode not in ("auto", "paddle", "surya", "pymupdf"):
+    if mode == "paddle":
+        # 旧配置兼容：PaddleOCR-VL 的「配对 + 内联」链路已清空，
+        # 公式增强改走 detection-service-group（auto 时同样会启用）。
+        warnings.append("解析后端 'paddle' 已停用（配对链路已清空），本次按 auto 处理"
+                        "（公式增强走 detection-service-group）")
+        mode = "auto"
+    if mode == "ftgroup":
+        # 旧名兼容：`ftgroup` 已改名为 `detection_service_group`。
+        warnings.append("解析后端 'ftgroup' 已改名为 'detection_service_group'，"
+                        "本次直接按新名处理")
+        mode = "detection_service_group"
+    if mode not in PARSER_MODES:
         warnings.append(f"未知的解析后端 {opts['backend']!r}，已按 auto 处理")
         mode = "auto"
     opts["backend"] = mode
@@ -112,112 +222,108 @@ def load_options(config_file: Optional[Path] = None,
         opts["dpi"] = max(48, min(400, int(opts["dpi"])))
     except (TypeError, ValueError):
         opts["dpi"] = DEFAULT_OPTIONS["dpi"]
+    try:
+        # 插图裁剪分辨率：0 = 跟随 dpi；上限 600（render_pages 的渲染上限）
+        opts["image_dpi"] = max(0, min(600, int(opts["image_dpi"])))
+    except (TypeError, ValueError):
+        opts["image_dpi"] = DEFAULT_OPTIONS["image_dpi"]
     for key in ("image_pad", "min_image_size"):
         try:
             opts[key] = int(opts[key])
         except (TypeError, ValueError):
             opts[key] = DEFAULT_OPTIONS[key]
-    for key in ("keep_html", "local_image_fallback", "fallback",
-                "drop_text_in_images", "paddle_ocr_math"):
+    for key in ("keep_html", "fallback",
+                "drop_text_in_images", "detection_service_group_enable",
+                "detection_service_group_keep_crops"):
         opts[key] = _to_bool(opts[key], DEFAULT_OPTIONS[key])
     try:
         opts["text_in_image_overlap"] = min(
             1.0, max(0.0, float(opts["text_in_image_overlap"])))
     except (TypeError, ValueError):
         opts["text_in_image_overlap"] = DEFAULT_OPTIONS["text_in_image_overlap"]
-    opts["image_labels"] = surya_parser.resolve_image_labels(opts["image_labels"])
-    opts["surya_url"] = surya_parser.normalize_url(opts["surya_url"])
+    opts["image_labels"] = _resolve_image_labels(opts["image_labels"])
+    opts["surya_url"] = _normalize_url(opts["surya_url"], DEFAULT_SURYA_URL)
     opts["surya_backend"] = (str(opts["surya_backend"] or "").strip().lower()
-                             or surya_parser.DEFAULT_BACKEND)
-    opts["paddle_url"] = paddle_parser.normalize_url(opts["paddle_url"])
-    opts["paddle_model"] = (str(opts["paddle_model"] or "").strip()
-                            or paddle_parser.DEFAULT_MODEL)
-    opts["paddle_prompt"] = (str(opts["paddle_prompt"] or "").strip()
-                             or paddle_parser.DEFAULT_PROMPT)
-    opts["paddle_api_key"] = str(opts["paddle_api_key"] or "").strip()
-    for key, lo in (("paddle_max_tokens", 64), ("paddle_timeout", 30)):
-        try:
-            opts[key] = max(lo, int(opts[key]))
-        except (TypeError, ValueError):
-            opts[key] = DEFAULT_OPTIONS[key]
+                             or DEFAULT_SURYA_BACKEND)
+    opts["detection_service_group_url"] = _normalize_url(
+        opts["detection_service_group_url"], DEFAULT_DETECTION_SERVICE_GROUP_URL)
+    key = "detection_service_group_timeout"
+    try:
+        opts[key] = max(30, int(opts[key]))
+    except (TypeError, ValueError):
+        opts[key] = DEFAULT_OPTIONS[key]
+    key = "detection_service_group_conf"
+    try:
+        opts[key] = min(1.0, max(0.0, float(opts[key])))
+    except (TypeError, ValueError):
+        opts[key] = DEFAULT_OPTIONS[key]
     return opts, warnings
 
 
-def client_ready() -> tuple[bool, str]:
-    """本地 Surya **客户端**依赖是否齐全。返回 (是否齐全, 缺失说明)。
-
-    推理跑在外部服务上，但本进程要自己渲染页面(Pillow) 并构造请求/解析 block
-    (surya-ocr)，缺任一的都会在解析中途抛 SuryaUnavailable 再回退 PyMuPDF。
-    这里只查模块是否存在(不真正 import)，避免拖慢启动或产生副作用。
-    """
-    import importlib.util
-    missing = []
-    if importlib.util.find_spec("PIL") is None:
-        missing.append("Pillow(pip install Pillow)")
-    if importlib.util.find_spec("surya") is None:
-        missing.append("surya-ocr(pip install -U surya-ocr)")
-    if missing:
-        return False, "本机缺少 Surya 客户端依赖：" + "、".join(missing)
-    return True, ""
-
-
 def status(config_file: Optional[Path] = None) -> dict:
-    """解析后端状态(供 /api/config 展示与排障)。
+    """解析后端状态(供 /api/config 与 /api/settings/parser 展示)。
 
-    effective 必须同时考虑「服务连得上」和「本机客户端依赖齐全」——
-    只看服务会误报 surya 可用，实际解析仍会回退。auto 按
-    PaddleOCR-VL > Surya > PyMuPDF 的优先级给出实际生效的那个。
+    返回字段是对外契约（前端 `common.js::renderParser` 在读）：
+      * `effective` —— 实际生效的版式后端：`surya`（配置为 surya 时）或 `pymupdf`；
+      * `detection_service_group_ready` 是**真探测**（`GET /health`，超时
+        `PROBE_TIMEOUT`=2s，免得面板拉状态时卡住）；它用于检测 Figure 并识别公式；
+      * `detection_service_group_enabled` 说明当前配置下**本次解析会不会**跑检测增强
+        （surya 后端不跑）；
+      * `surya_ready` 是**真探测**（`GET /models`）**且**本机 surya-ocr 客户端依赖
+        就绪（`surya_client_ready`）—— 两者都满足才能用 surya 后端解析；
+        `surya_service_ready` 单独给出服务端探测结果，`surya_message` 是明细。
     """
     try:
         opts, warnings = load_options(config_file)
     except Exception as exc:  # pragma: no cover - 配置损坏时不应影响服务
         return {"backend": "pymupdf", "effective": "pymupdf", "message": str(exc)}
 
-    p_ok, p_models, p_msg = paddle_parser.check_server(
-        opts["paddle_url"], timeout=paddle_parser.PROBE_TIMEOUT,
-        model=opts["paddle_model"])
-    s_ok, _models, s_msg = surya_parser.check_server(
-        opts["surya_url"], timeout=surya_parser.PROBE_TIMEOUT)
-    ready, why = client_ready()          # Surya 客户端依赖(surya-ocr + Pillow)
-    surya_usable = s_ok and ready
+    try:
+        f_ok, f_msg = detection_service_group_check(
+            opts["detection_service_group_url"],
+            timeout=DETECTION_SERVICE_GROUP_PROBE_TIMEOUT)
+    except Exception as exc:   # 探测本身出错不该影响状态接口
+        f_ok, f_msg = False, f"探测失败：{exc}"
+    try:
+        s_ok, s_msg = surya_check(opts["surya_url"], timeout=SURYA_PROBE_TIMEOUT)
+    except Exception as exc:   # 同上：探测异常只是"不可用"
+        s_ok, s_msg = False, f"探测失败：{exc}"
+    try:
+        c_ok, c_msg = surya_client_ready()
+    except Exception as exc:
+        c_ok, c_msg = False, f"客户端依赖探测失败：{exc}"
 
-    mode = opts["backend"]
-    if mode == "pymupdf":
-        effective = "pymupdf"
-    elif mode == "paddle":
-        effective = "paddle" if p_ok else "pymupdf"
-    elif mode == "surya":
-        effective = "surya" if surya_usable else "pymupdf"
-    else:                                 # auto：优先级 paddle > surya > pymupdf
-        effective = "paddle" if p_ok else ("surya" if surya_usable else "pymupdf")
-
-    # 给前端一段“为什么是它”的说明
-    messages: list[str] = []
-    if effective == "paddle":
-        messages.append(p_msg)
-    elif effective == "surya":
-        messages.append(s_msg)
+    backend = opts["backend"]
+    enhance_on = bool(opts.get("detection_service_group_enable")) and backend in (
+        "auto", "detection_service_group")
+    if backend == "surya":
+        if s_ok and c_ok:
+            message = ("文字版式、公式（<math>→LaTeX）与插图由 Surya 2 整页 OCR 提供，"
+                       "前端按 Surya 数据独立渲染；detection-service-group 不参与")
+        else:
+            why = "推理服务不可用" if not s_ok else "本机缺少 surya-ocr 客户端依赖"
+            message = f"解析后端现为 surya，但{why} —— 上传 / 重解析会失败（见下方明细）"
     else:
-        if not p_ok:
-            messages.append(p_msg)
-        if not surya_usable:
-            messages.append(f"服务就绪，但{why}" if s_ok and why else s_msg)
-
+        message = ("文字版式走 PyMuPDF 本地解析；detection-service-group "
+                   "用于提供 Figure 图片并识别公式框与 LaTeX"
+                   + ("（服务已就绪）" if f_ok else "（服务不可用，本次跳过检测增强）"))
     return {
-        "backend": mode,
-        "effective": effective,
-        "env_override": bool(os.environ.get("PDF_PARSER_BACKEND")),
-        "paddle_url": opts["paddle_url"],
-        "paddle_ready": p_ok,
-        "paddle_model": opts["paddle_model"],
-        "paddle_models": p_models,
-        "paddle_message": p_msg,
+        "backend": backend,              # 用户保存的值(auto/detection_service_group/…)
+        "effective": "surya" if backend == "surya" else "pymupdf",   # 实际生效的版式后端
+        "env_override": bool(os.environ.get(_ENV_KEYS["backend"])),
+        "detection_service_group_url": opts["detection_service_group_url"],
+        "detection_service_group_ready": f_ok,
+        "detection_service_group_enabled": enhance_on,
+        "detection_service_group_message": f_msg,
         "surya_url": opts["surya_url"],
         "surya_backend": opts["surya_backend"],
-        "surya_ready": s_ok,
-        "surya_client_ready": ready,
-        "surya_message": s_msg,
+        # 服务端 + 客户端都就绪才算"能用"；细分给 surya_service_ready / client_ready
+        "surya_ready": bool(s_ok and c_ok),
+        "surya_service_ready": bool(s_ok),
+        "surya_client_ready": bool(c_ok),
+        "surya_message": f"{s_msg}；{c_msg}",
         "dpi": opts["dpi"],
-        "message": "；".join(m for m in messages if m),
+        "image_dpi": opts["image_dpi"],
+        "message": message,
         "warnings": warnings,
     }

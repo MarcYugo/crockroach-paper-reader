@@ -10,9 +10,15 @@
      const { maybeAutoSummarize, syncAiButtons, jumpToAi, renderTocAi, loadAi } =
        R2Ai({ $, docId, findItem, keyParts, pageOfItem, scrolled, toScrollTop,
               needWrite, anchorProbe, canWrite: (...a) => canWrite(...a),
+              renderInlineMath, katexReady, ensureKatex,
               get META() { return META; }, get anno() { return anno; } });
    注：`canWrite` 声明在 AI 段**之后**（共享权限那一段），所以这里只能包一层转发，
    调用时才会真正去读那个 const（装配那一刻它还处于 TDZ）。
+
+   2026-10 起：对话气泡（含流式增量）与整理结果里的自由文本都走 **Markdown 渲染**
+   （r2-md.js 自带的小渲染器，不引第三方库）；文字里若带 $…$ / \(…\) 数学，
+   再借 r2-math.js 的 renderInlineMath() 就地换成 KaTeX —— reader2.js 装配时把
+   renderInlineMath / katexReady / ensureKatex 三个函数传进来（可选，缺了也不影响）。
 
    AI 自己的状态（aiSummary / aiChat / aiBusyWhat / aiEdit / …）全部随本文件走，
    不再占用 reader2.js 的作用域；段内 `const busy = …` 是**同名局部变量**（按钮置灰用），
@@ -22,6 +28,8 @@ window.R2Ai = function (env) {
   "use strict";
   const { $, docId, findItem, keyParts, pageOfItem, scrolled, toScrollTop,
           needWrite, anchorProbe, canWrite } = env;
+  // 可选：KaTeX 三件套（AI 文字里的行内数学用），由 reader2.js 装配传入
+  const { renderInlineMath, katexReady, ensureKatex } = env;
 
   /* ================= 文末 · AI 辅助阅读（笔记整理 + 对话） =================
      读到 ≥95% 时自动把这篇的笔记整理一次（结果存服务端，不重复花 token）；
@@ -35,6 +43,8 @@ window.R2Ai = function (env) {
   let aiDraftEl = null;     // 上面那个气泡的 DOM，增量更新用（不整框重画）
   let aiEdit = "";          // 正在就地编辑哪一块（aiKeyOf(...) 的字符串；空串 = 没在编辑）
   let aiSaving = false;     // 正在把手改的整理存回服务端
+  let aiMathTried = false;  // 已为文字里的数学懒加载过一次 KaTeX（失败也别反复试）
+  let aiDraftRaf = 0;       // 流式重绘的 rAF 句柄（增量猛进来时每帧最多渲染一次）
   const aiBusy = () => aiBusyWhat !== "";
 
   function aiNotes() {
@@ -106,6 +116,39 @@ window.R2Ai = function (env) {
     }
   }
 
+  /* ---------- AI 文字的 Markdown 渲染（对话气泡 + 整理条目） ----------
+     渲染器在 r2-md.js（自带实现，不引第三方库）；文字里若带 $…$ / \(…\) 数学，
+     再借 r2-math.js 的 KaTeX 就地替换 —— 没加载过就先懒加载，加载完重画面板。
+     渲染器出意外时退回纯文本：宁可不好看，也别让面板空白。 */
+  function aiMd(host, text) {
+    const s = text == null ? "" : String(text);
+    host.classList.add("md");
+    if (!window.R2Md) { host.textContent = s; return; }
+    try { window.R2Md.render(host, s); } catch (e) { host.textContent = s; }
+    aiMdMath(host, s);
+  }
+  function aiMdInline(host, text) {
+    const s = text == null ? "" : String(text);
+    host.classList.add("md");
+    if (!window.R2Md) { host.textContent = s; return; }
+    try { window.R2Md.inline(host, s); } catch (e) { host.textContent = s; }
+    aiMdMath(host, s);
+  }
+  function aiMdMath(host, text) {
+    if (!renderInlineMath || !window.R2Md || !window.R2Md.hasMath(text)) return;
+    if (!katexReady || katexReady()) {          // 已就绪（或没给判断函数）：直接就地渲染
+      try { renderInlineMath(host); } catch (e) { /* ignore */ }
+      return;
+    }
+    if (!ensureKatex || aiMathTried) return;    // 只懒加载一次；失败也不反复试
+    aiMathTried = true;
+    ensureKatex().then(ok => {
+      if (!ok) return;
+      renderAiChat();                           // 重画后 aiMd 里 katexReady() 已为 true
+      if (!aiEdit) renderAiSummary();           // 正在就地编辑时别重画（会吞掉输入框里的字）
+    });
+  }
+
   function renderAiChat() {
     const box = $("aiMsgs");
     aiDraftEl = null;
@@ -122,14 +165,23 @@ window.R2Ai = function (env) {
       const me = m.role === "user";
       const d = el("div", "ai-msg " + (me ? "me" : "ai"));
       d.appendChild(el("div", "who", me ? "我" : "AI"));
-      d.appendChild(el("div", "txt", m.content || ""));
+      if (me) {
+        d.appendChild(el("div", "txt", m.content || ""));   // 自己打的字原样显示（保留换行）
+      } else {
+        const txt = el("div", "txt");
+        aiMd(txt, m.content || "");                          // AI 回复按 Markdown 渲染
+        d.appendChild(txt);
+      }
       box.appendChild(d);
     }
     if (aiDraft !== null) {
-      // 流式回复：气泡跟着已收到的字长大，光标提示“还在写”
+      // 流式回复：气泡跟着已收到的字长大（同样按 Markdown 渲染），光标提示“还在写”
       aiDraftEl = el("div", "ai-msg ai " + (aiDraft ? "streaming" : "pending"));
       aiDraftEl.appendChild(el("div", "who", "AI"));
-      aiDraftEl.appendChild(el("div", "txt", aiDraft || "⏳ 正在想…"));
+      const dtxt = el("div", "txt");
+      if (aiDraft) aiMd(dtxt, aiDraft);
+      else dtxt.textContent = "⏳ 正在想…";
+      aiDraftEl.appendChild(dtxt);
       box.appendChild(aiDraftEl);
     } else if (aiBusy()) {
       // 还没开始回字（整理笔记 / 刚发出去）：工作状态就放聊天流末尾，
@@ -143,17 +195,23 @@ window.R2Ai = function (env) {
     box.scrollTop = box.scrollHeight;      // 新消息 / 工作状态总在可见处
   }
 
-  /* 收到一段增量：只改那一个气泡的文字，不整框重画（否则长回复会卡） */
+  /* 收到一段增量：只重画那一个气泡的文字（Markdown 整体重渲，节流到每帧一次），
+     不整框重画（否则长回复会卡） */
   function pushAiDelta(text) {
     if (!text) return;
     if (aiDraft === null) { aiDraft = ""; renderAiChat(); }
     aiDraft += text;
-    const txt = aiDraftEl && aiDraftEl.querySelector(".txt");
-    if (!txt) { renderAiChat(); return; }
-    txt.textContent = aiDraft;
+    if (!aiDraftEl) { renderAiChat(); return; }
     aiDraftEl.className = "ai-msg ai streaming";
-    const box = $("aiMsgs");
-    box.scrollTop = box.scrollHeight;
+    if (aiDraftRaf) return;                 // 本帧已排过一次渲染
+    aiDraftRaf = requestAnimationFrame(() => {
+      aiDraftRaf = 0;
+      const txt = aiDraftEl && aiDraftEl.querySelector(".txt");
+      if (!txt) return;                     // 流已结束 / 气泡已重建：什么都不用做
+      aiMd(txt, aiDraft || "");
+      const box = $("aiMsgs");
+      box.scrollTop = box.scrollHeight;
+    });
   }
 
   /* 逐行读 SSE（`data: {json}` + 空行），把事件交给 onEvent。
@@ -231,7 +289,9 @@ window.R2Ai = function (env) {
       box.appendChild(holder);
     } else if (s.overview) {
       const holder = el("div", "ai-text ai-over");
-      holder.appendChild(el("div", "ai-txt", s.overview));
+      const tx = el("div", "ai-txt");
+      aiMd(tx, s.overview);
+      holder.appendChild(tx);
       if (canEdit) holder.appendChild(aiTools("overview", null, null, null));
       box.appendChild(holder);
     } else if (canEdit) {
@@ -259,7 +319,9 @@ window.R2Ai = function (env) {
         aiInlineEdit(titleBox, t.title || "", v => { t.title = v; saveAiSummary(); },
                      { single: true, placeholder: "这一组叫什么？" });
       } else {
-        titleBox.appendChild(el("h4", "", t.title || "要点"));
+        const h4 = el("h4", "");
+        aiMdInline(h4, t.title || "要点");
+        titleBox.appendChild(h4);
         if (canEdit) {
           titleBox.appendChild(aiTools("theme-title", ti, null, () => aiDelTheme(ti), "删主题"));
         }
@@ -394,7 +456,10 @@ window.R2Ai = function (env) {
       aiInlineEdit(holder, text, onSave, {});
       return holder;
     }
-    holder.appendChild(el("div", "ai-txt", text || "（空）"));
+    const tx = el("div", "ai-txt");
+    if (String(text || "").trim()) aiMd(tx, text);
+    else tx.textContent = "（空）";
+    holder.appendChild(tx);
     if (canWrite() && !aiBusy() && !aiSaving) holder.appendChild(aiTools(kind, a, b, onDel));
     return holder;
   }

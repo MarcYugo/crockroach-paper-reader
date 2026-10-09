@@ -237,9 +237,22 @@ a { color: var(--accent); text-decoration: none; }
 }
 
 /* 版式文本 */
-.blk { position: absolute; cursor: text; z-index: 3; }
+/* ⚠️ 命中测试只认「真的画了东西」的盒子，`cursor: text` 由子元素继承：
+   `.blk` 是个覆盖整块的透明矩形（跨行、含被擦成空格的公式空位），而同一个视觉行
+   常被切成好几块（公式空位两侧各一块），这些矩形彼此重叠、后插入的盖住先插入的字。
+   若让容器自己参与命中，点/拖段落首句会落到**别的块**上（表现为「首句选不中」，
+   拖拽也会从错误的块开始选）。所以：容器 `pointer-events: none`，
+   只有行盒 `.ln`、公式盒 `.mathbox`、展开卡片 `.exp` 吃指针事件。
+   `.exp` 是继承属性 `pointer-events` 的锚点 —— 设成 auto 后卡片内部也一起恢复。 */
+.blk { position: absolute; cursor: text; z-index: 3; pointer-events: none; }
+.blk > .ln, .blk > .mathbox, .blk > .exp, .blk.has-math { pointer-events: auto; }
 .blk .ln { position: absolute; white-space: pre; line-height: 1; }
 .blk .ln .rn { display: inline; }
+/* 行内公式：后端把 LaTeX **内联进了行文本**(`\(…\)`)，由 `renderInlineMath` 就地
+   换成 KaTeX。`.ln` 是 `white-space: pre`(公式空位的等长空格要靠它显示成真实宽度)，
+   而 KaTeX 的 HTML 里带换行与缩进 —— 在 pre 下会被当真实空格渲染、公式会散架，
+   所以 KaTeX 子树必须恢复常规空白处理。*/
+.blk .ln .katex, .blk .ln .katex * { white-space: normal; }
 .blk:hover { outline: 1px dashed var(--line-hover); outline-offset: 1px; }
 .blk.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .blk.sel .ln { background: rgba(47, 111, 237, .07); }
@@ -252,7 +265,13 @@ a { color: var(--accent); text-decoration: none; }
 .blk .mathbox {
   position: absolute; left: 0; top: 0; max-width: 100%;
   /* 等比适配后基本不会超宽；万一还超就让它溢出去 —— 不裁、也不出滚动条 */
-  overflow: visible;
+  overflow: visible; user-select: text; -webkit-user-select: text;
+}
+.blk .mathbox:hover, .fbox:hover {
+  outline: 1px dashed var(--line-hover); outline-offset: 1px;
+}
+.fbox.formula-sel {
+  outline: 2px solid var(--accent); outline-offset: 1px;
 }
 /* KaTeX 没加载 / 这条 LaTeX 渲染不出来时的兜底：直接显示源码。
    比回退到 PDF 抽出的原字形可读得多(那些是碎片与错字)，也避免"有的公式遮住、
@@ -271,9 +290,98 @@ a { color: var(--accent); text-decoration: none; }
    必须由 **class** 驱动而不是内联样式：选句/高亮/标注都会重建 span，重建后内联样式会丢，
    那样原字形就会从 KaTeX 底下冒出来变成重影。`!important` 是为了盖过 styleRun 的内联色。
    又因为 class 必须**逐条公式**打（渲染失败的那条要保持可见，不能跟着一起隐掉），
-   所以用 .mspan-hidden 而不是块级 class。pointer-events:none 是为了不挡住文本选择。 */
+   所以用 .mspan-hidden 而不是块级 class。行内公式覆盖层接收指针事件，以支持原生公式文字选取。 */
 .blk .mspan-hidden { color: transparent !important; }
-.blk .mathbox.inline { pointer-events: none; }
+.blk .mathbox.inline { pointer-events: auto; }
+
+/* ============ Surya 2 解析的文档：块级流式排版（reader2.js::buildSuryaItem） ============
+   Surya 的版面数据是块级的（没有逐行几何），块内文字走**正常流式排版** ——
+   字号/行高由解析侧估算后内联下发（t.size / t.line_h），这里只管结构样式与
+   各类型块的观感（标题加粗、图注/脚注/页眉页脚淡化、表格描边）。 */
+.blk.sy .ln.syln { position: static; white-space: normal; overflow-wrap: break-word; }
+/* 正文类块（解析侧 align="justify"）：**两端对齐** —— 原 PDF（LaTeX 排版）的段落
+   默认 justified、行右缘齐平到栏边界；跨行块在流式排版下的默认左对齐会让右缘
+   随断行参差不齐，与原文观感明显不同。`text-align-last: left` 把末行显式钉在
+   左对齐（浏览器默认行为，写出来防止个别版本把末行也拉伸），与原 PDF 的末行
+   一样自然收尾。只加在 .syln 上、由 data-align 驱动：竖排条带（sy-vertical,
+   宽度 max-content）、表格（.sytable）、标题（解析侧下发 left）都不受影响；
+   行内公式作为普通行内内容参与拉伸，公式自身被 .katex-inline 钉住不折行。 */
+.blk.sy[data-align="justify"] .syln { text-align: justify; text-align-last: left; }
+.blk.sy.sy-heading .syln { font-weight: 700; }
+/* 竖排条带（旋转 90° 的页眉/水印，如 arXiv 侧边戳）：内容整体旋转、自下而上排 */
+.blk.sy.sy-vertical .syln {
+  position: absolute; left: 0; top: 100%;
+  width: max-content; white-space: nowrap;
+  transform: rotate(-90deg); transform-origin: left top;
+}
+/* 图注/脚注/页眉页脚淡化：颜色在 .rn 上是内联的（styleRun），只能用整体透明度 */
+.blk.sy.sy-footnote { opacity: .8; }
+.blk.sy.sy-header, .blk.sy.sy-footer { opacity: .55; }
+/* 表格：白名单渲染的 Surya <table>（描边是阅读器补的，Surya 数据里只有结构） */
+.blk.sy .sytable {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+}
+.blk.sy .sytable-title {
+  width: 100%;
+  margin: 0 0 4px;
+  color: var(--mut);
+  font-size: .9em;
+  line-height: 1.4;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.blk.sy .sytable caption {
+  width: 100%;
+  color: var(--mut);
+  font-size: .9em;
+  line-height: 1.4;
+  text-align: right;
+}
+.blk.sy .sytable table { border-collapse: collapse; width: 100%; }
+.blk.sy .sytable td, .blk.sy .sytable th {
+  border: 1px solid var(--line); padding: 2px 5px; vertical-align: top;
+}
+.blk.sy .sytable th { font-weight: 700; background: var(--bg-soft); }
+/* 行内公式（suryaInlineMath 就地渲染的 KaTeX）：**绝不换行** —— 公式内部（y = 0、
+   \frac…）允许折行的话，一个公式会被拆到三行上去（KaTeX 的 HTML 里本来就有可断点）；
+   `.blk .ln .katex *` 那条为了 `\(…\)` 情境恢复的 normal 在这里要被压掉。 */
+.blk.sy .katex-inline,
+.blk.sy .katex-inline .katex,
+.blk.sy .katex-inline .katex * { white-space: nowrap; }
+
+/* detection-service-group 公式框覆盖层：解析侧下发 pages[].formula_boxes（bbox_norm 为
+   归一化中心 xywh），r2-math.js 按「bbox_norm × 页面显示宽高」定位这个盒子，
+   再把内部 KaTeX 等比缩放到框内。实测检测框有时会覆盖尚未擦除的正文，使用页面底色
+   遮住框内原字形，避免与公式重叠；公式内容仍可正常选取。 */
+.fbox {
+  position: absolute; z-index: 3; pointer-events: auto;
+  background: var(--page-bg);
+  user-select: text; -webkit-user-select: text;
+}
+/* KaTeX 渲染失败/未就绪时的**框内裁图**兜底（base64 图像，与 PDF 原位同框）：铺满整个框。
+   暗色下略微压暗，与 .page .img img 同一处理。 */
+.fbox > img { display: block; width: 100%; height: 100%; }
+.fbox[data-cls="InlineFormula"] > img { object-fit: contain; }
+html.dark .fbox > img { filter: brightness(.9); }
+.fbox > .katex-fit {
+  position: absolute; left: 50%; top: 50%; width: max-content;
+  transform: translate(-50%, -50%);
+  transform-origin: center center; white-space: normal; line-height: 1;
+  user-select: text; -webkit-user-select: text;
+}
+.fbox * { user-select: text; -webkit-user-select: text; }
+/* display 模式的 KaTeX 自带上下留白，去掉（定尺按自然尺寸算） */
+.fbox > .katex-fit > .katex-display { display: block; margin: 0; text-align: left; }
+.fbox > .katex-fit > .katex-display > .katex { display: block; margin: 0; }
+/* KaTeX 没加载 / 这条 LaTeX 渲染不出来时：直接显示源码兜底（与 .mathbox.failed 一致） */
+.fbox.failed > .katex-fit {
+  font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+  white-space: pre-wrap; color: #8a5a00; opacity: .9;
+}
+html.dark .fbox.failed > .katex-fit { color: #d7a95b; }
 
 .img { position: absolute; z-index: 1; }
 .img img { display: block; width: 100%; height: 100%; }
@@ -473,6 +581,11 @@ a { color: var(--accent); text-decoration: none; }
   box-shadow: inset 0 0 0 1.5px rgba(47, 111, 237, .5);
   border-radius: 3px;
 }
+/* 公式覆盖的占位空白仍参与句子范围，但不应与公式框的选中效果重叠。 */
+.blk .ln .rn.sel.rngap {
+  background: transparent;
+  box-shadow: none;
+}
 /* 半透明底色高亮：颜色由 JS 按调色盘写成 inline background(前 3 个默认色 + 3 个自定义色) */
 .blk .ln .rn.hl { border-radius: 2px; }
 /* 有笔记的句子：底部一条红线 */
@@ -592,7 +705,9 @@ body.side-open .reader-main { padding-right: 384px; }
 .ai-end {
   padding: 0 16px 72px; font-size: calc(13px * var(--page-scale, 1));
   /* 两个框的**固定高度**：内容再多也不会把框撑长，超出的部分在框内滚动。
-     想改高低就改这一个值（也可写死成如 560px）。 */
+     想改高低就改这一个值（也可写死成如 560px）。
+     底部留白 72px —— 要求 ≤ 面板高度的一半（--ai-panel-h 最小 320px，一半 160px，
+     恒成立）；这里是**文档最后一个区块**，后面不能再出现没有内容的空滚区。 */
   --ai-panel-h: clamp(320px, 56vh, 620px);
 }
 .ai-in { max-width: 1240px; margin: 26px auto 0; }
@@ -643,6 +758,10 @@ html.dark .ai-mark { filter: drop-shadow(0 0 5px rgba(150, 180, 255, .4)); }
 }
 .ai-msgs {
   flex: 1; min-height: 0; overflow-y: auto;      /* 高度由 .ai-chat 固定，消息多了自己滚 */
+  /* position: relative **不能省**：KaTeX 的 .katex-mathml 是绝对定位，框里如果没有
+     定位祖先，它会“逃出”这个滚动框、按未裁剪的位置去撑高整个文档 —— 表现为
+     「AI 面板下方凭空多出几千 px 空白，页面能一直空滚」。加了定位它就老实关在框内。 */
+  position: relative;
   padding: 12px; display: flex; flex-direction: column; gap: 12px;
 }
 .ai-msg { font-size: 1.04em; line-height: 1.75; }
@@ -686,6 +805,7 @@ html.dark .ai-mark { filter: drop-shadow(0 0 5px rgba(150, 180, 255, .4)); }
 .ai-sum {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 16px 18px; overflow-y: auto;          /* 高度固定，整理内容多了自己滚 */
+  position: relative;                            /* 同 .ai-msgs：拦住 KaTeX 绝对定位元素外溢、撑高页面 */
 }
 .ai-over { font-size: 1.06em; line-height: 1.85; margin: 0 0 4px; }
 .ai-sec-head { display: flex; align-items: center; gap: 8px; margin: 16px 0 6px; }
@@ -753,6 +873,60 @@ html.dark .ai-mark { filter: drop-shadow(0 0 5px rgba(150, 180, 255, .4)); }
   height: 100%; display: flex; align-items: center; justify-content: center;
   gap: 8px; color: var(--mut); font-size: 1em; padding: 26px 0;
 }
+
+/* ---------- AI 文字里的 Markdown（r2-md.js 渲染，容器挂 .md） ----------
+   用在：对话气泡（AI 侧）与整理条目的自由文本。换行不再靠 pre-wrap
+   （由 <br> / 块元素表达），标题 / 列表 / 代码 / 引用 / 表格给一套紧凑样式；
+   颜色全走语义变量，暗色主题自动跟着变。 */
+.md { white-space: normal; }
+.ai-msg .txt.md { white-space: normal; }     /* 盖掉 .ai-msg .txt 的 pre-wrap（特异性要够高） */
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0 0 .55em; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: .75em 0 .35em; line-height: 1.45; font-weight: 650;
+}
+.md h1 { font-size: 1.28em; }
+.md h2 { font-size: 1.18em; }
+.md h3 { font-size: 1.1em; }
+.md h4, .md h5, .md h6 { font-size: 1.02em; }
+.md ul, .md ol { margin: .35em 0 .65em; padding-left: 1.45em; }
+.md li { margin: .12em 0; }
+.md li > ul, .md li > ol { margin: .1em 0 .15em; }
+.md code {
+  font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+  font-size: .92em; padding: 0 4px; border: 1px solid var(--line);
+  border-radius: 5px; background: var(--bg-chip);
+}
+.md pre.md-pre {
+  margin: .5em 0; padding: 8px 10px; overflow-x: auto;
+  background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px;
+  white-space: pre;
+}
+.md pre.md-pre code {
+  padding: 0; border: 0; background: none; font-size: .92em; line-height: 1.6;
+  white-space: inherit;
+}
+.md pre.md-pre[data-lang]::before {          /* 围栏上的语言名：当角标显示 */
+  content: attr(data-lang); display: block; margin: -2px 0 4px;
+  font-family: ui-monospace, Menlo, Consolas, "Courier New", monospace;
+  font-size: .82em; color: var(--mut);
+}
+.md blockquote {
+  margin: .5em 0; padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--line); color: var(--mut);
+}
+.md hr.md-hr { border: 0; border-top: 1px solid var(--line); margin: .9em 0; }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+.md del { color: var(--mut); }
+.md table.md-table {
+  border-collapse: collapse; margin: .5em 0; font-size: .96em;
+  display: block; max-width: 100%; overflow-x: auto;   /* 宽表格在框内横向滚，不撑破面板 */
+}
+.md table.md-table th, .md table.md-table td {
+  border: 1px solid var(--line); padding: 3px 8px; vertical-align: top;
+}
+.md table.md-table th { background: var(--bg-soft); font-weight: 600; }
 
 /* ============================================================
    登录 / 认证 / LLM 设置
@@ -897,6 +1071,7 @@ html.dark .ai-mark { filter: drop-shadow(0 0 5px rgba(150, 180, 255, .4)); }
 .drop-av.k-anthropic { background: linear-gradient(135deg, #d97757, #b0492d); }
 .drop-av.k-custom    { background: linear-gradient(135deg, #a06bff, #6d3ff0); }
 .drop-av.k-google    { background: linear-gradient(135deg, #ffb54d, #e0721d); }
+.drop-av.k-lang      { background: linear-gradient(135deg, #8ea2c6, #5b6f96); font-size: 11.5px; }
 .drop-av.k-new      { background: var(--bg-soft); color: var(--accent); border: 1px dashed var(--line-hover); }
 /* 共享弹窗里的账号头像：按用户名固定挑一个渐变色 */
 .drop-av.u1 { background: linear-gradient(135deg, #5b7cff, #2f4bd8); }
@@ -1039,6 +1214,10 @@ html.dark .blk .ln .rn.sel {
   background: rgba(110, 168, 255, .24);
   box-shadow: inset 0 0 0 1.5px rgba(110, 168, 255, .6);
 }
+html.dark .blk .ln .rn.sel.rngap {
+  background: transparent;
+  box-shadow: none;
+}
 html.dark .page .img img { filter: brightness(.9); }   /* 纯白插图别在暗底上晃眼 */
 html.dark .share-badge { background: var(--tagshare-bg); color: var(--tagshare-ink); border-color: var(--line); }
 html.dark .share-badge.write { background: var(--tagdone-bg); color: var(--tagdone-ink); border-color: var(--line); }
@@ -1062,5 +1241,3 @@ html.dark .ai-empty .big { filter: saturate(.9); }
   box-shadow: var(--shadow); display: flex; align-items: center; justify-content: center;
 }
 .theme-fab:hover { border-color: var(--accent); }
-
-

@@ -12,12 +12,12 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import tempfile
 from pathlib import Path
 
 from . import pdf_parser
 from .records import Store
+from .translate import TARGET_LANGS, cache_key
 
 
 def _now() -> str:
@@ -29,7 +29,12 @@ def convert(store: Store, doc_id: str, pdf_path: Path, source_name: str,
     """转换一份 PDF → 版式文档 + 阅读记录，返回记录元数据(meta)。
 
     `owner` = 归属账号：论文按账号隔离，列表/打开都会按它过滤。
-    解析后端由 pdf_parser 决定(surya 推理服务优先，不可用时回退 PyMuPDF)，
+    解析后端按 config.json / 环境变量（默认 auto）：
+      * auto/detection_service_group：PyMuPDF 本地抽取文字版式，Figure 裁图与
+        公式框 + LaTeX 由 detection-service-group 提供；
+      * surya：整页 OCR 走 Surya 2，文字/公式/插图全部用 Surya 的数据
+        （前端按 `parser === "surya"` 走独立渲染），Surya 不可用时直接报错；
+      * pymupdf：纯本地、不调用外部服务。
     实际使用的后端与告警会记到 doc.json 里，便于排障。
     """
     images_dir = store.images_dir(doc_id)
@@ -63,6 +68,13 @@ def convert(store: Store, doc_id: str, pdf_path: Path, source_name: str,
         "parser": parsed.get("parser"),
         "parser_info": parsed.get("parser_info"),
         "warnings": parsed.get("warnings") or [],
+        # 公式是怎么落地的（详见 pdf_parser 包文档）：
+        #   "boxes" = 页面上叠了公式框覆盖层（pages[].formula_boxes，前端按 bbox_norm
+        #             在页面上渲染 KaTeX —— detection-service-group 可用时的正常路径）；
+        #   "space" = 公式字形已擦成等长空白（服务不可用 / 一条都没返回）；
+        #   "inline" = 旧 PaddleOCR 配对链路的产物，仅存在于重解析前的旧 doc.json。
+        # 这个字段是给排障与分流用的。
+        "formula_action": parsed.get("formula_action"),
         "pages": parsed["pages"],
     }
     store.save_doc(doc_id, doc)
@@ -93,9 +105,7 @@ def convert(store: Store, doc_id: str, pdf_path: Path, source_name: str,
 # =====================================================================
 #  原地重解析版式（解析器升级后用，笔记 / 译文 / 进度都保留）
 # =====================================================================
-def _hash_text(text: str) -> str:
-    """与 `app._hash_text` 同一口径 —— 译文缓存的键。"""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
 
 
 def _block_texts(pages) -> dict[str, str]:
@@ -116,9 +126,10 @@ def _latex_count(pages) -> int:
 def _remap_translations(store, doc_id: str, old_pages, new_pages) -> int:
     """把按「旧块文本」缓存的译文迁到新块文本上（块 id 不变、文本因补公式变了）。
 
-    译文缓存的键是块文本的 sha1；解析升级后块文本会变（比如注入了 `\\(…\\)`），
-    不迁移的话那些块就显得「没译过」。只迁「同 id、文本确实变了、新键还没有译文」
-    的那些；迁不动的保持原样，最坏就是那几个块重新翻译一次。
+    译文缓存的键是「目标语言 + 块文本」的哈希（见 `translate.cache_key`）；解析升级后
+    块文本会变（比如注入了 `\\(…\\)`），不迁移的话那些块就显得「没译过」。**每种目标语言
+    各查一次**（同一段文的不同语言译文是分开存的），只迁「同 id、文本确实变了、新键还没有
+    译文」的那些；迁不动的保持原样，最坏就是那几个块重新翻译一次。
     """
     try:
         cache = store.get_translations(doc_id)
@@ -131,14 +142,16 @@ def _remap_translations(store, doc_id: str, old_pages, new_pages) -> int:
     for tid, new_text in _block_texts(new_pages).items():
         if not new_text:
             continue
-        new_key = _hash_text(new_text)
-        if new_key in cache:
-            continue
         old_text = old.get(tid)
-        if old_text and old_text != new_text:
-            zh = cache.get(_hash_text(old_text))
-            if zh:
-                updates[new_key] = zh
+        changed = bool(old_text) and old_text != new_text
+        for lang in TARGET_LANGS:
+            new_key = cache_key(new_text, lang)
+            if new_key in cache:
+                continue
+            if changed:
+                zh = cache.get(cache_key(old_text, lang))
+                if zh:
+                    updates[new_key] = zh
     if updates:
         store.set_translations(doc_id, updates)
     return len(updates)
@@ -174,6 +187,7 @@ def reparse(store: Store, doc_id: str, pdf_path: Path,
         "parser": parsed.get("parser"),
         "parser_info": parsed.get("parser_info"),
         "warnings": parsed.get("warnings") or [],
+        "formula_action": parsed.get("formula_action"),   # boxes = 公式框覆盖层；space = 公式已擦成空格
         "pages": new_pages,
         "num_pages": parsed.get("num_pages"),
         "page_w": parsed.get("page_w"),

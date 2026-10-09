@@ -1,0 +1,1 @@
+modelscope download --model "PaddlePaddle/SLANet_plus" --local_dir "./models/SLANet_plus"

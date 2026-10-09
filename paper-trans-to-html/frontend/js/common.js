@@ -12,6 +12,9 @@ function el(tag, cls, text) {
 }
 async function api(path, opts = {}) {
   const opt = { method: opts.method || "GET", headers: opts.headers || {} };
+  // GET 一律绕过浏览器 HTTP 缓存：论文版式（重解析）、译文/笔记/状态等都可能
+  // 被其它窗口或服务端工具更新 —— 缓存里藏着旧副本会让刷新看到旧数据。
+  if (opt.method === "GET") opt.cache = "no-store";
   if (opts.json != null) {
     opt.headers["Content-Type"] = "application/json";
     opt.body = JSON.stringify(opts.json);
@@ -479,6 +482,113 @@ function createProviderDropdown(o) {
   return { render, set, toggle, isOpen };
 }
 
+/* ---------- 翻译目标语言下拉：与「服务类型」同一套自绘浮层 ----------
+   语言清单由服务端下发（`target_langs`：键 -> 名字），所以后端加语言不用改前端；
+   收起时是一张卡片（语言短码 + 名称 + 语言代码），展开是浮层列表，样式与上面一致。 */
+const LANG_SHORT = {
+  "zh-CN": "简", "zh-TW": "繁", en: "EN", ja: "日", ko: "한",
+  fr: "FR", de: "DE", es: "ES", pt: "PT", ru: "РУ", ar: "ع", hi: "हि",
+};
+function langAvatar(key) {
+  const short = LANG_SHORT[key] || String(key || "").slice(0, 2).toUpperCase();
+  return `<span class="drop-av k-lang">${esc(short)}</span>`;
+}
+function createLangDropdown(o) {
+  const select = o.select, btn = o.btn, menu = o.menu;
+  let names = {};                      // 语言键 -> 显示名（服务端下发）
+  function render() {
+    const cur = select.value;
+    const items = Object.keys(names);
+    const curName = names[cur] || cur || "选择语言";
+    btn.innerHTML =
+      langAvatar(cur) +
+      `<span class="drop-txt"><span class="drop-name">${esc(curName)}</span>` +
+      `<span class="drop-sub">${esc(cur || "未选择")}</span></span>` +
+      `<span class="drop-chev">▾</span>`;
+    menu.innerHTML = items.map(k =>
+      `<button type="button" class="drop-item${k === cur ? " on" : ""}"` +
+      ` data-lang="${esc(k)}" role="option" aria-selected="${k === cur}">` +
+        `<span class="drop-check">${k === cur ? "✓" : ""}</span>` +
+        langAvatar(k) +
+        `<span class="drop-txt"><span class="drop-name">${esc(names[k])}</span>` +
+        `<span class="drop-sub">${esc(k)}</span></span>` +
+      `</button>`).join("") || `<div class="drop-empty">没有可选语言</div>`;
+    menu.querySelectorAll("[data-lang]").forEach(b => {
+      b.onclick = () => set(b.dataset.lang);
+    });
+  }
+  function set(v) {
+    select.value = v;
+    toggle(false);
+    render();
+    if (o.onChange) o.onChange(v);
+  }
+  function isOpen() { return !menu.hidden; }
+  function toggle(open) {
+    if (open == null) open = !isOpen();
+    if (open && o.onOpen) o.onOpen();
+    menu.hidden = !open;
+    btn.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", String(open));
+  }
+  btn.addEventListener("click", () => toggle());
+  render();
+  return { render, set, toggle, isOpen,
+           setNames(v) { names = v || {}; render(); } };
+}
+
+/* ---------- OCR 解析后端下拉：与上面同一套自绘浮层，但不带头像 ----------
+   收起时是一张文字卡片（选项名 + 说明），展开是浮层列表；边框、圆角、悬浮 / 聚焦
+   高亮与「服务类型」「目标语言」完全一致，只是没有左侧的图案。 */
+const OCR_BACKENDS = [
+  { value: "auto", name: "自动", sub: "PyMuPDF 文字版式 + 服务组图片/公式检测", badge: "默认" },
+  { value: "detection_service_group", name: "服务组图片/公式检测", sub: "detection-service-group" },
+  { value: "surya", name: "Surya 2 推理服务", sub: "整页 OCR：文字 / 公式 / 插图" },
+  { value: "pymupdf", name: "PyMuPDF 本地解析", sub: "不跑图片/公式检测" },
+];
+function ocrBackendMeta(v) {
+  return OCR_BACKENDS.find(b => b.value === v) || OCR_BACKENDS[0];
+}
+function createOcrBackendDropdown(o) {
+  const select = o.select, btn = o.btn, menu = o.menu;
+  function render() {
+    const cur = select.value;
+    const meta = ocrBackendMeta(cur);
+    btn.innerHTML =
+      `<span class="drop-txt"><span class="drop-name">${esc(meta.name)}</span>` +
+      `<span class="drop-sub">${esc(meta.sub)}</span></span>` +
+      `<span class="drop-chev">▾</span>`;
+    menu.innerHTML = OCR_BACKENDS.map(b =>
+      `<button type="button" class="drop-item${b.value === cur ? " on" : ""}"` +
+      ` data-backend="${esc(b.value)}" role="option" aria-selected="${b.value === cur}">` +
+        `<span class="drop-check">${b.value === cur ? "✓" : ""}</span>` +
+        `<span class="drop-txt"><span class="drop-name">${esc(b.name)}</span>` +
+        `<span class="drop-sub">${esc(b.sub)}</span></span>` +
+        (b.badge ? `<span class="drop-badge">${esc(b.badge)}</span>` : "") +
+      `</button>`).join("");
+    menu.querySelectorAll("[data-backend]").forEach(x => {
+      x.onclick = () => set(x.dataset.backend);
+    });
+  }
+  function set(v) {
+    select.value = v;
+    toggle(false);
+    render();
+    if (o.onChange) o.onChange(v);
+  }
+  function isOpen() { return !menu.hidden; }
+  function toggle(open) {
+    if (open == null) open = !isOpen();
+    if (open && o.onOpen) o.onOpen();
+    menu.hidden = !open;
+    btn.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", String(open));
+  }
+  btn.addEventListener("click", () => toggle());
+  render();
+  return { render, set, toggle, isOpen };
+}
+
 /* 设置弹窗：LLM 服务 / 存储 与 OCR / 账号 三个页签（首页 / 阅读页共用） */
 function openLlmModal(tab) {
   if (document.getElementById("llmModal")) return;
@@ -549,13 +659,26 @@ function openLlmModal(tab) {
           <input id="lmModel" placeholder="deepseek-chat">
           <div class="hint">如 deepseek-chat / gpt-4o-mini / claude-sonnet-4-5 / qwen2.5:7b</div>
         </div>
+        <div class="field">
+          <label for="lmLangBtn">翻译目标语言</label>
+          <div class="drop" id="lmLangDrop">
+            <button class="drop-btn" id="lmLangBtn" type="button"
+                    aria-haspopup="listbox" aria-expanded="false"></button>
+            <div class="drop-menu" id="lmLangMenu" role="listbox" hidden></div>
+            <select id="lmLang" hidden></select>
+          </div>
+          <div class="hint">
+            原文语言不用选：交给大模型自动识别（英文/日文/德文…都行），这里只决定<b>译文</b>用哪种语言。
+            译文缓存按语言分开存，换语言后不会把上一个语言的译文当成本次结果（切回去仍然在）。
+          </div>
+        </div>
         <div class="form-err" id="lmErr" hidden></div>
         <div class="form-ok" id="lmOk" hidden></div>
         <div class="hint" id="lmState"></div>
       </div>
       <div class="modal-body" id="paneSys" hidden>
         <p class="hint" style="margin:0 0 12px">
-          数据存储与 <b>PDF 解析（OCR）</b>是安装级配置，本机所有账号共用，
+          数据存储与 <b>PDF 解析 / 图片与公式检测</b>是安装级配置，本机所有账号共用，
           与账号无关。
         </p>
         <div class="field">
@@ -566,13 +689,18 @@ function openLlmModal(tab) {
           </div>
         </div>
         <div class="field">
-          <label for="ocrBackend">PDF 解析后端（OCR）</label>
-          <select id="ocrBackend">
-            <option value="auto">自动（PaddleOCR-VL ＞ Surya ＞ PyMuPDF）</option>
-            <option value="paddle">PaddleOCR-VL（GPU 推理服务，优先）</option>
-            <option value="surya">Surya 2 推理服务</option>
-            <option value="pymupdf">PyMuPDF 本地解析（CPU 兜底）</option>
-          </select>
+          <label for="ocrBackendBtn">PDF 解析后端 / 图片与公式检测</label>
+          <div class="drop" id="ocrBackendDrop">
+            <button class="drop-btn" id="ocrBackendBtn" type="button"
+                    aria-haspopup="listbox" aria-expanded="false"></button>
+            <div class="drop-menu" id="ocrBackendMenu" role="listbox" hidden></div>
+            <select id="ocrBackend" hidden>
+              <option value="auto">自动（PyMuPDF 文字版式 + 服务组图片/公式检测）</option>
+              <option value="detection_service_group">服务组图片/公式检测（detection-service-group）</option>
+              <option value="surya">Surya 2 推理服务（整页 OCR：文字 / 公式 / 插图）</option>
+              <option value="pymupdf">PyMuPDF 本地解析（不跑图片/公式检测）</option>
+            </select>
+          </div>
           <div class="row-actions" style="margin-top:8px">
             <button class="btn primary" id="ocrSave" type="button">保存解析后端</button>
           </div>
@@ -638,6 +766,7 @@ function openLlmModal(tab) {
   let activeId = "";        // 当前生效的那套
   let editingId = "";       // 表单现在对应哪套（"" = 新建）
   let maxProfiles = 3;
+  let currentLang = "";     // 服务端当前的翻译目标语言（保存后据此判断“语言是否换了”）
 
   function setKeyHint(masked) {
     savedKeyMasked = masked || "";
@@ -664,8 +793,20 @@ function openLlmModal(tab) {
   /* 服务类型下拉：复用全局 createProviderDropdown，与登录页引导同一套渲染 */
   const providerDrop = createProviderDropdown({
     select: $("lmProvider"), btn: $("lmProviderBtn"), menu: $("lmProviderMenu"),
-    onOpen: () => toggleProfileMenu(false),    // 两个下拉互斥，避免叠在一起
+    onOpen: () => { toggleProfileMenu(false); langDrop.toggle(false); ocrDrop.toggle(false); },
     onChange: () => syncProvider(),            // 重绘按钮，并按需隐藏 / 预填地址与模型
+  });
+  /* 翻译目标语言下拉：与上面同款自绘浮层（语言清单来自服务端） */
+  const langDrop = createLangDropdown({
+    select: $("lmLang"), btn: $("lmLangBtn"), menu: $("lmLangMenu"),
+    onOpen: () => { toggleProfileMenu(false); providerDrop.toggle(false); ocrDrop.toggle(false); },
+  });
+  /* OCR 解析后端下拉：与上面同款自绘浮层（无头像，收起时是纯文字卡片） */
+  const ocrDrop = createOcrBackendDropdown({
+    select: $("ocrBackend"), btn: $("ocrBackendBtn"), menu: $("ocrBackendMenu"),
+    onOpen: () => {
+      toggleProfileMenu(false); providerDrop.toggle(false); langDrop.toggle(false);
+    },
   });
 
   function profileSub(p) {
@@ -746,6 +887,7 @@ function openLlmModal(tab) {
   function onDocClick(e) {
     if (!$("lmProfileDrop").contains(e.target)) toggleProfileMenu(false);
     if (!$("lmProviderDrop").contains(e.target)) providerDrop.toggle(false);
+    if (!$("lmLangDrop").contains(e.target)) langDrop.toggle(false);
   }
 
   function renderProfiles() {
@@ -793,6 +935,7 @@ function openLlmModal(tab) {
     profiles = cur.profiles || [];
     activeId = cur.active_id || "";
     maxProfiles = cur.max_profiles || 3;
+    renderLangs(cur);
     let sel = profiles.find(p => p.id === editingId);
     if (!sel) { editingId = activeId; sel = profiles.find(p => p.id === activeId); }
     // 表单展示选中的那套；一套都没有时展示“当前生效值”（可能来自环境变量/config.json）
@@ -809,6 +952,32 @@ function openLlmModal(tab) {
       : "本账号还没保存任何配置，当前用的是安装级默认（环境变量 / config.json / 内置默认）。";
   }
 
+  /* 翻译目标语言下拉：选项由服务端给（`target_langs` 键 -> 名字），加语言不用改前端 */
+  function renderLangs(cur) {
+    const langs = cur.target_langs || {};
+    const keys = Object.keys(langs);
+    currentLang = cur.target_lang || cur.default_target_lang || "";
+    if (!keys.length) { langDrop.toggle(false); return; }
+    const sel = $("lmLang");
+    if (sel.dataset.keys !== keys.join(",")) {
+      sel.innerHTML = keys.map(k =>
+        `<option value="${esc(k)}">${esc(langs[k])}</option>`).join("");
+      sel.dataset.keys = keys.join(",");
+      langDrop.setNames(langs);
+    }
+    if (currentLang) sel.value = currentLang;
+    langDrop.toggle(false);                 // 刷新时收起浮层（内容变了，重画）
+    langDrop.render();
+  }
+
+  /* 目标语言换了：阅读页得把上一个语言的译文清掉再按新语言拉一次（服务端也是按语言分开存的） */
+  function notifyLangChange(r) {
+    const name = (r.target_langs || {})[r.target_lang] || r.target_lang || "";
+    toast("翻译目标语言已改为：" + name);
+    document.dispatchEvent(new CustomEvent("paper-target-lang",
+      { detail: { lang: r.target_lang, name } }));
+  }
+
   /* 保存/切换/删除后，阅读页的“未配置翻译服务”提示跟着变 */
   function syncNotice(r) {
     const n = document.getElementById("notice");
@@ -819,12 +988,13 @@ function openLlmModal(tab) {
     }
   }
 
-  /* 底部那行“当前生效 / Key 来源 / 已保存几套” */
+  /* 底部那行“当前生效 / Key 来源 / 译文语言 / 已保存几套” */
   function renderState(r) {
     const src = r.source_text || {};
     $("lmState").innerHTML =
       `当前生效：<b>${esc(r.status_text || "未配置")}</b>` +
-      `　·　属于账号 <b>${esc(r.owner || "")}</b><br>` +
+      `　·　属于账号 <b>${esc(r.owner || "")}</b>` +
+      `　·　译文语言 <b>${esc(r.target_lang_text || r.target_lang || "")}</b><br>` +
       `Key 来源：${esc(src.api_key || "-")}` +
       (r.using_account_key
         ? "　（本账号专属）"
@@ -851,6 +1021,8 @@ function openLlmModal(tab) {
       api_key: $("lmClearKey").checked ? "" : ((keyTouched && key !== "") ? key : null),
       profile_id: editingId || "new",   // 有 id 就改写那套，否则新建一套（服务端限制最多 3 套）
       profile_name: $("lmProfileName").value.trim(),   // 自定义名，留空则自动显示“配置 N（模型）”
+      // 译文目标语言：跟账号走（users.prefs.target_lang），与上面几套配置槽无关
+      target_lang: $("lmLang").value || null,
     };
   }
 
@@ -890,34 +1062,44 @@ function openLlmModal(tab) {
     }
   }
 
-  /* PDF 解析后端：paddle(PaddleOCR-VL 推理服务，优先) > surya(Surya 2)
-     > pymupdf(本地)。 “服务在跑但实际仍用 PyMuPDF”是最容易踩的坑
-     （服务没起 / 缺客户端依赖 / 容器网络不通），所以 effective 不是所选后端时
-     把原因原样显示出来。 */
+  /* PDF 解析后端：
+       · auto / detection_service_group：PyMuPDF 抽取文字版式，detection-service-group
+         提供 Figure 裁图与公式框 + LaTeX 覆盖层；
+       · surya：整页 OCR —— 文字 / 公式（<math>→LaTeX）/ 插图全用 Surya 的数据，
+         前端按 Surya 数据独立渲染（不回落 PyMuPDF）；
+       · pymupdf：纯本地，不连任何服务。
+     服务没起 / 依赖没装时这里如实显示状态。 */
   const OCR_TEXT = {
-    paddle: "PaddleOCR-VL 推理服务（GPU）",
-    surya: "Surya 2 推理服务",
-    pymupdf: "PyMuPDF 本地解析",
+    detection_service_group: "图片/公式检测服务组（detection-service-group）",
+    surya: "Surya 2 推理服务（文字 / 公式 / 插图全用 Surya）",
+    pymupdf: "PyMuPDF 本地解析（不跑图片/公式检测）",
   };
-  const OCR_NAME = { auto: "自动", paddle: "PaddleOCR-VL", surya: "Surya 2", pymupdf: "PyMuPDF" };
+  const OCR_NAME = { auto: "自动", detection_service_group: "detection-service-group", surya: "Surya 2", pymupdf: "PyMuPDF" };
 
   function renderParser(p) {
     const el2 = $("lmParser");
     if (!p) { el2.textContent = "状态获取失败（可能未登录）"; return; }
-    if ($("ocrBackend") && p.backend) $("ocrBackend").value = p.backend;
+    if ($("ocrBackend") && p.backend) {
+      $("ocrBackend").value = p.backend;
+      ocrDrop.render();               // 服务端配置可能变了：同步卡片上的文字
+    }
     const eff = p.effective || "pymupdf";
     let html = `${eff === "pymupdf" ? "📄" : "✅"} 实际使用：` +
       `<b>${esc(OCR_TEXT[eff] || eff)}</b>（配置：<code>${esc(p.backend || "")}</code>）`;
-    // 两个 OCR 服务 + 本机客户端依赖的就绪状态，一眼看出为什么回退
-    html += `<br>${p.paddle_ready ? "✅" : "⛔"} PaddleOCR-VL ` +
-      `<code>${esc(p.paddle_url || "")}</code>` +
-      (p.paddle_model ? `（模型 ${esc(p.paddle_model)}）` : "");
+    // 两条解析链的就绪状态：detection-service-group（PyMuPDF 路）与 Surya 2
+    html += `<br>${p.detection_service_group_ready ? "✅" : "⛔"} detection-service-group ` +
+      `<code>${esc(p.detection_service_group_url || "")}</code>` +
+      (p.detection_service_group_enabled === false ? "（当前配置不跑图片/公式检测）" : "");
     html += `<br>${p.surya_ready ? "✅" : "⛔"} Surya 2 ` +
       `<code>${esc(p.surya_url || "")}</code>` +
-      (p.surya_client_ready === false ? "（本机缺客户端依赖）" : "");
-    if (p.message) html += `<br>${eff === "pymupdf" ? "⚠️" : "ℹ️"} ${esc(p.message)}`;
+      (p.surya_client_ready === false ? "（本机缺 surya-ocr 客户端依赖）" : "") +
+      (p.surya_message ? `<span title="${esc(p.surya_message)}">` : "") +
+      "</span>";
+    if (p.message) html += `<br>ℹ️ ${esc(p.message)}`;
     if (p.env_override) html += `<br>⚠️ 已设置环境变量 <code>PDF_PARSER_BACKEND</code>，` +
-      `它会覆盖这里的保存值`;
+      `它会<b>覆盖</b>这里保存的值（环境变量优先级高于 <code>config.json</code>）—— ` +
+      `要按面板的设置生效，请去掉它（<code>docker/.env</code> / compose 里的 ` +
+      `<code>PDF_PARSER_BACKEND</code>）再 <code>docker compose up -d</code> 重建容器`;
     for (const w of (p.warnings || [])) html += `<br>⚠️ ${esc(w)}`;
     el2.innerHTML = html;
   }
@@ -939,8 +1121,13 @@ function openLlmModal(tab) {
     btn.disabled = true; btn.textContent = "保存中…";
     try {
       const r = await api("/api/settings/parser", { method: "POST", json: { backend: v } });
-      renderParser(r.parser || r);
-      toast("PDF 解析后端已切换为：" + (OCR_NAME[v] || v));
+      const p = r.parser || r;
+      renderParser(p);
+      // 环境变量优先级高于 config.json：这种情况“保存成功”≠“真的切过去了”，
+      // 必须直说，否则看起来就像“选了 pymupdf 但解析依旧走 OCR”。
+      toast(p.env_override
+        ? "已写入配置，但环境变量 PDF_PARSER_BACKEND 会覆盖它（见下方提示）"
+        : "PDF 解析后端已切换为：" + (OCR_NAME[v] || v));
       appConfig(true);            // 让其它页面读到最新状态
     } catch (e) {
       $("lmParser").innerHTML = `❌ 切换失败：${esc(e.message)}`;
@@ -960,6 +1147,7 @@ function openLlmModal(tab) {
 
   $("lmSave").onclick = async () => {
     err(""); ok("");
+    const langBefore = currentLang;                 // 保存前服务端的语言，用来判断“这次是否换了语言”
     try {
       const r = await api("/api/settings/llm", { method: "POST", json: payload() });
       editingId = r.active_id || editingId;      // 保存即切换：新/改的那套成为当前生效
@@ -970,6 +1158,7 @@ function openLlmModal(tab) {
       toast("LLM 设置已保存（本账号）：" + (saved ? profileLabel(saved) : ""));
       renderState(r);
       syncNotice(r);
+      if (r.target_lang && r.target_lang !== langBefore) notifyLangChange(r);
     } catch (e) { err(e.message); }
   };
 
@@ -1044,6 +1233,8 @@ function openLlmModal(tab) {
     const isAcc = which === "acc";
     toggleProfileMenu(false);        // 切页签时收起配置下拉
     providerDrop.toggle(false);      // 服务类型下拉也一并收起
+    langDrop.toggle(false);          // 目标语言下拉同理
+    ocrDrop.toggle(false);           // OCR 后端下拉也一样
     $("tabLlm").classList.toggle("on", isLlm);
     $("tabSys").classList.toggle("on", isSys);
     $("tabAcc").classList.toggle("on", isAcc);
@@ -1188,6 +1379,8 @@ function openLlmModal(tab) {
   document.addEventListener("keydown", function onEsc(e) {
     if (e.key !== "Escape" || !document.getElementById("llmModal")) return;
     if (providerDrop.isOpen()) { providerDrop.toggle(false); return; }  // 先收下拉
+    if (langDrop.isOpen()) { langDrop.toggle(false); return; }
+    if (ocrDrop.isOpen()) { ocrDrop.toggle(false); return; }
     if (!$("lmProfileMenu").hidden) { toggleProfileMenu(false); return; }
     close();
     document.removeEventListener("keydown", onEsc);
@@ -1210,4 +1403,3 @@ async function storageHint() {
   }
 }
 document.addEventListener("DOMContentLoaded", storageHint);
-

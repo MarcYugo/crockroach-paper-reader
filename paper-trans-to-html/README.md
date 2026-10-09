@@ -8,7 +8,7 @@
    - **多账号 / 切换账号**：登录页本身就有「登录 / 注册新账号」两个页签 —— **不登录也能注册**（默认开启，见 `ALLOW_SIGNUP`）、也能直接换另一个账号登录（登录页的「使用其他账号登录 →」会清空输入框，避开浏览器回填）；右上角头像 →「账号」页签可以查看全部账号（含各自论文数）、新增账号、删除其他账号（可选是否连论文一起删）。**切换账号有两种方式**：点列表里的某个账号（整行可点，登录页会把**账号名自动填好**，只需输密码），或用「切换账号（退出登录）」按钮。**论文数据按账号隔离**，各账号互不可见（详见下方「数据存储」与功能 8）。
    - **注销账号（自助删除）**：同一个「账号」页签底部有「⚠️ 注销当前账号」——需重输**当前密码 + 用户名**并二次确认，之后账号与它名下的**全部论文数据**（版式数据/高亮/笔记/译文/图片）一起永久删除、无法恢复，随后自动退出到登录页。若注销的是最后一个账号，服务会回到「首次使用 · 创建管理员账号」状态。
 2. **版式还原**：文字块与图片按原 PDF 坐标/字号/字体/颜色重建；每条文字行还会自动按 PDF 线框适配宽度，双栏/紧排时不会因字体宽度差异而侵入中间空隙造成文字重合。
-3. **版面解析可接 Surya 2 推理服务**（默认 `auto`）：能连上服务就用它做**版面分析 + 整页 OCR** —— 自动提取 `Picture/Figure/Diagram/ChemicalBlock` 插图并裁剪落盘，表格 `<table>`、公式 `<math>` 的 HTML 一并保留；服务不可用时自动回退本地 PyMuPDF 抽取（内嵌点阵图去重/去整页背景 + 矢量图表聚类栅格化），不会因为服务没开就用不了。两种后端都会做**去重影**：插图里已经烘焙了文字（裁剪图/扫描图/OCR 隐形文字层）时，不再把同一批文字叠在图上渲染。
+3. **图片与公式识别有两个后端可选**：默认 `auto` = PyMuPDF 提取文字版式 + detection-service-group 检测 `Figure`/公式框；`surya` = 整页 OCR（文字 / 公式 `<math>`→LaTeX / 插图裁图全部来自 Surya 2，前端按 Surya 数据独立渲染，不回落 PyMuPDF）；服务不可用时文字版式仍可用（仅 PyMuPDF 路线），Surya 路线则直接报错。
 4. **翻译（非实时、英译中）**：
    - 点击任意句子 → “译本段”，在**该段之后**显示整段中文译文，并自动把后续版式内容顶开、不遮挡；
    - **多选句子时只翻译所选句**：拖选多句后点 `翻译所选句子`，只把**选中的那几个句子**送去翻译，结果显示在一张带 `所选句译文` 标题的卡片里（虚线黄框，可点 `清除`）；选区跨段落时按段落切成多段分别翻译再合并展示，再点一次同一选区即可收起；
@@ -38,7 +38,7 @@
    - **笔记标作者**：论文一旦共享给别人，每条笔记都会带一个**作者小标签**（`alice` / `bob`），正文内嵌卡片与右侧「全部笔记」里都有；自己写的那条高亮成蓝色（浅色底 + 主题色字），别人的是灰色，扫一眼就能分出哪些是自己写的。笔记存 `by`（写它的账号），**谁最后改就是谁的**（同一句只有一条笔记，B 改写 A 的那条后标 B）；**加这个标识之前的老笔记**算论文所有者的；**没共享给别人时不下发作者、界面上也没有标签**（那种情况只有自己能看）。高亮不标（它没有文字内容，标了反而吵）。
    - 权限在**服务端**层层校验（不只是前端藏按钮）：只读账号对任何写接口都会拿到 403；没有权限的论文一律 404（不泄露存在性）；**删除论文**与**管理共享名单**只有所有者能做。
 
-10. **AI 辅助阅读（文末）**：每篇论文**正文最后**都有一个 AI 面板 —— **左边对话、右边笔记整理**。读完（进度 **≥ 95%**）会**自动**把这篇的**笔记**整理一次：总览 / 主题梳理 / 笔记之间的关联 / 还没想清楚的问题 / 下一步可以做什么，也可以随时点「重新整理」。对话会带上「标题 + 你的笔记 + 这份整理」，用来**帮你想清楚**（而不是替你读书）；整理与对话都随论文存库，刷新/换设备都在，笔记改了会提示「可重新整理」。需要 OpenAI 兼容的 LLM（Google 免费兜底做不了这类任务）。两个框**高度固定**（默认 `clamp(320px, 56vh, 620px)`），内容多了在框内滚动，不会跟着内容把页面撑长；左右结构时宽度按 **2 : 3** 分配（左对话 : 右整理），窄到放不下就自动变成上下**等宽**结构；字体与笔记卡同一套比例；左侧目录栏里还有一块独立的「AI 辅助阅读」（可跳到文末、也可点主题定位）。整理或对话**进行中**时，等待提示只出现在**左侧对话流**里（`⏳ 正在读你的笔记…` / `⏳ 正在想…`，带淡入淡出动画），**右侧整理内容不会被清空或遮挡**，按钮在请求期间临时禁用。**对话回复是流式的**（边生成边显示，末尾光标闪烁），不是等整段写完再一次性刷出来。整理结果**不是只读的**：总览 / 主题标题 / 每条要点都能点「编辑」就直接改（`Ctrl+Enter` 保存、`Esc` 取消），也能加主题、加要点、删条目，改完立刻存库；之后点「重新整理」会把**这一版（含你手改的内容）+ 你聊过的对话**一起并成新版，而不是推倒重来。
+10. **AI 辅助阅读（文末）**：每篇论文**正文最后**都有一个 AI 面板 —— **左边对话、右边笔记整理**。读完（进度 **≥ 95%**）会**自动**把这篇的**笔记**整理一次：总览 / 主题梳理 / 笔记之间的关联 / 还没想清楚的问题 / 下一步可以做什么，也可以随时点「重新整理」。对话会带上「标题 + 你的笔记 + 这份整理」，用来**帮你想清楚**（而不是替你读书）；整理与对话都随论文存库，刷新/换设备都在，笔记改了会提示「可重新整理」。需要 OpenAI 兼容的 LLM（Google 免费兜底做不了这类任务）。两个框**高度固定**（默认 `clamp(320px, 56vh, 620px)`），内容多了在框内滚动，不会跟着内容把页面撑长；左右结构时宽度按 **2 : 3** 分配（左对话 : 右整理），窄到放不下就自动变成上下**等宽**结构；字体与笔记卡同一套比例；左侧目录栏里还有一块独立的「AI 辅助阅读」（可跳到文末、也可点主题定位）。整理或对话**进行中**时，等待提示只出现在**左侧对话流**里（`⏳ 正在读你的笔记…` / `⏳ 正在想…`，带淡入淡出动画），**右侧整理内容不会被清空或遮挡**，按钮在请求期间临时禁用。**对话回复是流式的**（边生成边显示，末尾光标闪烁），不是等整段写完再一次性刷出来；**AI 回复按 Markdown 渲染**（标题 / 列表 / 粗体 / 行内代码 / 代码块 / 引用 / 表格 / 链接，自己提的问题保持原样），文字里带 `$…$` / `\(…\)` 的**行内数学还会用 KaTeX 就地排版**（懒加载，渲染不了就显示原文）。整理结果**不是只读的**：总览 / 主题标题 / 每条要点都能点「编辑」就直接改（`Ctrl+Enter` 保存、`Esc` 取消），也能加主题、加要点、删条目，改完立刻存库；之后点「重新整理」会把**这一版（含你手改的内容）+ 你聊过的对话**一起并成新版，而不是推倒重来。
 
     - **读完的论文直接落到 AI 面板**：一篇文章读到文末（自动标记完成、或你点过「已完成 ✓」）之后，下次进阅读页会**直接停在文末的 AI 面板**那一段，而不是先落在最后一页再自己往下滚（想从正文读起：点顶栏「已完成 ✓」切回在读即可）。
 
@@ -59,28 +59,31 @@ backend/           后端(FastAPI)
   mongo_store.py   模块七 · MongoDB 存储实现(集合/索引/各存储后端)
   storage.py       存储装配(按 APP_STORAGE 选 MongoDB 或本地 JSON 回退)
   settings.py      模块五 · 运行时设置(LLM 服务地址/Key/模型；每账号最多 3 套可切换)
-  pdf_parser/      模块一 · 文档解析(PDF → 版式布局数据，三后端：PaddleOCR-VL / Surya / PyMuPDF)
+  pdf_parser/      模块一 · 文档解析(PDF → 版式布局数据；文字版式 = PyMuPDF 或 Surya 2)
     __init__.py    门面：设计说明 + 对外接口(parse_pdf / status) + 内部名字再导出
-    options.py     解析配置 / 后端可用性探测 / status()
+    options.py     解析配置 / 图片与公式检测服务探测 / status()
     text_layer.py  文字层抽取(字体族、行框、行内样式)
-    images.py      插图抽取：去重影 / 内嵌位图 / 矢量图 / 挖洞
-    backend_pymupdf.py / backend_surya.py / backend_paddle.py   三个解析后端
-    ocr_blocks.py  OCR 整页文本 → 版式块
-    math_text.py / math_font.py / math_locate.py / math_inline.py / math_block.py
-                   公式：文本工具 / 字体判据 / 锚点与视觉行定位 / 行内落地 / 公式块
-    entry.py       入口 parse_pdf(后端选择与回退链)
-  surya_parser.py  Surya 2 推理服务客户端(版面分析/整页 OCR/插图裁剪)
+    sentences.py   按句子重切块（一个块 = 恰好一句）
+    images.py      插图检测区域去重影 / 挖洞
+    backend_pymupdf.py  版式后端 · PyMuPDF（公式字形 → 等长空格）
+    backend_detection_service_group.py  图片/公式增强 · detection-service-group
+    backend_surya.py    版式后端 · Surya 2 整页 OCR（块级数据，前端独立渲染）
+    backend_paddle.py / formula_match.py  【已清空】旧 PaddleOCR 配对链路(占位壳)
+    math_text.py / math_font.py   公式：文本工具 / 字体判据与字形→空格
+    entry.py       入口 parse_pdf(+ 公式后处理挂载点)
+  detection_service_group.py  detection-service-group 客户端(图片/公式/表格服务组，JSON+base64 页面图)
+  surya_parser.py  Surya 2 推理服务客户端（整页 OCR / 插图裁剪 / 块 HTML→文本·runs·LaTeX）
   converter.py     模块二 · 文档转换(解析结果落盘为论文文档+图片)
   records.py       模块三 · 论文阅读记录(本地 JSON 版，MongoDB 不可用时回退)
   translate.py     译文服务(OpenAI 兼容接口 / Google 兜底 + 连通性探测 + 流式对话 chat_stream)
-  ai_read.py       模块八 · AI 辅助阅读(文末把笔记整理成主题/关联/疑问 + 带笔记的对话，支持流式)
+  ai_read.py       模块八 · AI 辅助阅读(把笔记整理成主题/关联/疑问 + 带整篇正文(含每页公式 LaTeX)的对话，支持流式)
   app.py           HTTP 接口 + 登录门禁中间件 + 前端静态托管
 frontend/          前端(原生 HTML/CSS/JS)
   login.html       登录页 / 首次使用向导(创建账号 → 配置 LLM)
   index.html       上传 + 论文阅读记录首页
   reader.html      阅读器(版式还原 + 翻译/标注/笔记)
   css/style.css    样式
-  js/              common(工具/登录态/LLM 设置弹窗) / login / home / r2-nav(页码-目录-进度-缩放) / r2-math(公式渲染) / r2-notes(笔记) / r2-ai(AI 面板) / reader2(阅读器主体)
+  js/              common(工具/登录态/LLM 设置弹窗) / login / home / r2-nav(页码-目录-进度-缩放) / r2-math(公式渲染) / r2-md(Markdown 渲染，AI 面板用) / r2-notes(笔记) / r2-ai(AI 面板) / reader2(阅读器主体)
 run.py             启动入口
 config.example.json  翻译服务配置示例
 mongo_configuration/  MongoDB 的 docker compose + 连接参数(.env) + 使用说明
@@ -201,7 +204,7 @@ API Key 只存在服务端，接口返回一律是打码串（`sk-4****8cca`）�
 | GET | `/api/doc/{id}/ai` | 文末 AI 面板的状态：已生成的笔记整理、对话记录、`stale`（笔记是否又改过）、`trigger_progress` |
 | POST | `/api/doc/{id}/ai/summary` | 把笔记整理成结构化摘要并保存（`{notes:[{sent,note,page}], force?}`；笔记没改且已有整理时直接返回缓存，不重复花 token。**重新整理时会带上上一版整理（含你手改过的内容）+ 已发生的对话**当素材） |
 | POST | `/api/doc/{id}/ai/summary/save` | 保存**手工编辑**后的整理（`{summary:{…}}`，整份覆盖；用宽松上限清洗，不会把写长的句子截掉） |
-| POST | `/api/doc/{id}/ai/chat` | 就这篇论文聊一轮（`{message, notes?}`；`notes` 不传就用生成整理时存下来的那份）。**流式（SSE）返回**：若干 `{"type":"delta","text":"…"}`，最后 `{"type":"done","chat":[…]}`；出错则是 `{"type":"error","message":"…"}`（不写库） |
+| POST | `/api/doc/{id}/ai/chat` | 就这篇论文聊一轮（`{message, notes?}`；`notes` 不传就用生成整理时存下来的那份）。上下文由服务端现拼：**整篇正文 + 每页公式 LaTeX** + 笔记 + 整理（正文从文档数据里读，读不到时照常聊、只是不带全文）。**流式（SSE）返回**：若干 `{"type":"delta","text":"…"}`，最后 `{"type":"done","chat":[…]}`；出错则是 `{"type":"error","message":"…"}`（不写库） |
 | POST | `/api/doc/{id}/share` | 新增/修改一条共享：`{user, perm}`，`perm` 是 `read`（只读）/ `write`（可写）；只能由**所有者**操作 |
 | GET | `/api/doc/{id}/share` | 这篇的共享名单（所有有权限的人都能看） |
 | DELETE | `/api/doc/{id}/share/{user}` | 取消某条共享（只能由所有者操作；顺手清掉那个人的阅读状态） |
@@ -211,6 +214,11 @@ API Key 只存在服务端，接口返回一律是打码串（`sk-4****8cca`）�
 > **AI 辅助阅读**的笔记上下文由前端提供（`[{sent, note, page}]`）—— 只有前端知道「这条笔记挂在哪句话上」；
 > 后端负责收敛长度（条数/单条/总长都有上限）与拼提示词。摘要要求模型返回 **JSON**（而非 Markdown），
 > 逐字段清洗后再渲染，所以模型偶发的字段缺失/类型不对不会把页面弄花。
+>
+> **对话带着整篇正文**：`/ai/chat` 的上下文（历史最前）除了标题/笔记/整理，还有后端用
+> `ai_read.article_text()` 现拼的**全文与每页公式 LaTeX**（`pages[].formula_boxes`；旧数据的
+> 公式块也认）—— 正文里公式位置是解析时擦出的空格，所以 LaTeX 按阅读顺序附在每页末尾，
+> 模型才能答「这篇讲了什么 / 这个公式是什么」。超长原文按页截断（上限 `MAX_ARTICLE_CHARS`）。
 >
 > **对话是流式的**：`/ai/chat` 返回 `text/event-stream`（`X-Accel-Buffering: no`，nginx 后面也不会被攒着），
 > 后端用 `Translator.chat_stream()`（`httpx.stream` + `iter_sse_deltas()`）把模型的增量原样转发；
@@ -327,90 +335,185 @@ cd ../docker && docker compose up -d --build     # ② 再起应用，打开 htt
 ```bash
 python tools/make_sample_pdf.py   # 生成样例 PDF
 python tools/selftest.py          # 校验“文档解析”模块(文字块/图片抽取)
-python tools/selftest.py xxx.pdf --backend paddle   # 指定后端自检
-python tools/reparse_layout.py --list               # 看已上传的论文用哪个后端/有多少公式块
+python tools/selftest.py xxx.pdf --backend detection_service_group  # 连 detection-service-group 验证公式框 + LaTeX
+python tools/selftest.py xxx.pdf --backend surya   # 走 Surya 2 整页 OCR（需服务已起 + 本机已装 surya-ocr）
+python tools/reparse_layout.py --list               # 看已上传的论文用哪个后端/有多少公式框
 python tools/mongo_check.py       # MongoDB 连接体检(参数从哪读/能否连上/怎么修)
 python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建业务账号
 # 然后把 samples/sample.pdf 拖到首页即可体验完整阅读流程
+# （旧的「空位 × OCR LaTeX」配对自检已随该链路清空，见 tools/check_formula_match.py 的说明）
 ```
 
-## 文档解析后端（可选：PaddleOCR-VL / Surya 2 推理服务）
+## 文档解析后端（PyMuPDF+detection-service-group / Surya 2 两条路线）
 
 解析后端由 `config.json` 的 `parser` 段控制（环境变量优先于配置文件），也可在网页
 「⚙ 设置 → 存储 / OCR」里直接切换（安装级配置，写回 `config.json`）：
 
 | 配置 | 说明 |
 | --- | --- |
-| `backend` | `auto`(默认) / `paddle` / `surya` / `pymupdf`。`auto` 按 **PaddleOCR-VL > Surya > PyMuPDF** 的优先级选：服务就绪就用，否则自动回退；显式指定某后端时失败也会往下回退 |
-| `surya_url` | Surya 推理服务地址，默认 `http://127.0.0.1:8060/v1` |
+| `backend` | `auto`(默认) / `detection_service_group` / `surya` / `pymupdf`。`auto`/`detection_service_group`：PyMuPDF 文字版式 + detection-service-group 提供 **Figure 裁图与公式增强**；`pymupdf` 不调用外部服务且不显示 Figure；`surya`：**整页 OCR**——文字/公式（`<math>`→LaTeX）/插图全部来自 Surya 2，**不使用 PyMuPDF 版式**，前端按 `parser === "surya"` 独立渲染（需本机装 `surya-ocr` 客户端，见 `requirements.txt`），不可用时直接报错不回退。旧值 `paddle`（等同 `auto`）与 `ftgroup`（等同 `detection_service_group`）仍被接受，均会记一条 warning |
+| `detection_service_group_url` | detection-service-group（formula_table_service_group 的 router_service）地址，默认 `http://127.0.0.1:9003/v1` |
+| `detection_service_group_timeout` | 一次预测（检测+识别）整体超时秒数(默认 600；长文档识别需等待数分钟) |
+| `detection_service_group_conf` | 检测置信度阈值(默认 0.25) |
+| `detection_service_group_enable` | 是否用服务组检测 Figure 并提供裁图，同时识别公式框 + LaTeX（默认开） |
+| `detection_service_group_keep_crops` | 公式渲染失败时是否保留兜底裁图；Figure 图片显示必需的裁图始终开启 |
+| `surya_url` | Surya 推理服务地址，默认 `http://127.0.0.1:8060/v1`（服务端见仓库根 `surya_doc_parse_service/`） |
 | `surya_backend` | 服务端类型：`llamacpp`(默认) / `vllm` |
-| `paddle_url` | PaddleOCR-VL 推理服务地址，默认 `http://127.0.0.1:8080/v1` |
-| `paddle_model` | 模型别名，要和服务的 `--served-model-name` 一致，默认 `PaddleOCR-VL-1.6-0.9B` |
-| `paddle_prompt` | 任务提示词，默认 `OCR:`（整页识别）；也支持 `Table Recognition:` / `Formula Recognition:` / `Chart Recognition:` |
-| `paddle_max_tokens` | 单页最大生成 token 数(默认 4096) |
-| `paddle_timeout` | 单页 OCR 请求超时秒数(默认 300) |
-| `paddle_api_key` | 服务端设了 `--api-key` 时填；没设留空 |
-| `paddle_ocr_math` | 是否用 OCR 的 LaTeX 给正文补公式（默认开，见下面「公式是怎么补进来的」） |
-| `dpi` | 页面渲染分辨率(默认 192)，越大越准、越慢 |
-| `image_labels` | 视为插图的版面标签(仅 Surya)，默认 `Picture/Figure/Diagram/ChemicalBlock` |
-| `keep_html` | 是否把 block 的 HTML(表格/公式)写进 `doc.json`(仅 Surya) |
-| `fallback` | 后端失败时是否继续往下回退(默认是，链尾一定是 PyMuPDF) |
+| `paddle_url` / `paddle_model` / `paddle_prompt` / `paddle_max_tokens` / `paddle_timeout` / `paddle_api_key` / `paddle_ocr_math` | **保留配置**：旧的 PaddleOCR-VL 客户端与配对链路已清空（本次起**不再被读取**）；键与 compose 里的 `PADDLE_OCR_*` 环境变量都保留，供参考/回退 |
+| `dpi` | 页面渲染分辨率，读取 `config.json` 的 `parser.dpi`（示例值 150）；越大越慢，可按模型对目标 PDF 的识别表现调整 |
+| `image_dpi` | **插图裁剪**的独立渲染分辨率（`parser.image_dpi`，0=与 `dpi` 相同）。只影响插图清晰度：对该页按更高 dpi 重渲一次再裁，OCR 速度与版式坐标不变；建议 300 左右 |
+| `image_labels` | 视为插图的检测类别，默认 `Picture/Figure/Diagram/ChemicalBlock` |
+| `keep_html` | 是否把 block 的 HTML(表格/公式)写进 `doc.json`；Surya 后端渲染需要 html，始终保留（旧配置项仍被读取但不再影响两条新链路） |
+| `fallback` | [已失效] 旧「后端失败回退」开关 |
+| `local_image_fallback` | [已停用] 旧 PyMuPDF 图片回退选项；配置中仍存在时会在解析告警里提示 |
 | `drop_text_in_images` | 是否剔除“已经画在插图里”的文字行，避免与图内文字叠字重影(默认开) |
 | `text_in_image_overlap` | 判定“整行落在插图里”的覆盖率阈值，默认 `0.6`(60%) |
 
-环境变量：`PDF_PARSER_BACKEND`、`SURYA_INFERENCE_URL`、`SURYA_INFERENCE_BACKEND`、
-`PADDLE_OCR_URL`、`PADDLE_OCR_MODEL`、`PADDLE_OCR_PROMPT`、`PADDLE_OCR_MAX_TOKENS`、
-`PADDLE_OCR_TIMEOUT`、`PADDLE_OCR_API_KEY`、`PADDLE_OCR_MATH`、`PDF_PARSER_DPI`、
-`PDF_PARSER_DROP_TEXT_IN_IMAGES`。设置面板会显示**实际生效**的后端与两个服务各自的就绪状态；
-若设了环境变量 `PDF_PARSER_BACKEND`，它会覆盖面板里保存的值（面板里会给出提示）。
+环境变量：`PDF_PARSER_BACKEND`、`DETECTION_SERVICE_GROUP_URL`、`DETECTION_SERVICE_GROUP_TIMEOUT`、`DETECTION_SERVICE_GROUP_CONF`、
+`DETECTION_SERVICE_GROUP_ENABLE`、`DETECTION_SERVICE_GROUP_KEEP_CROPS`、`SURYA_INFERENCE_URL`、`SURYA_INFERENCE_BACKEND`、`PDF_PARSER_DPI`、`PDF_PARSER_IMAGE_DPI`、
+`PDF_PARSER_DROP_TEXT_IN_IMAGES`；另保留 `PADDLE_OCR_*`（不再被读取）。
+设置面板会显示**实际生效**的后端、图片/公式检测服务（detection-service-group）与 Surya 的就绪状态。
 
-### 三种后端的分工
+优先级是 `parse_pdf(backend=...)` > 环境变量 `PDF_PARSER_BACKEND` > `config.json`，**但环境变量只在
+真的设了非空值时才参与**（空字符串=没设）。Docker 部署下 compose 默认**不再**注入这个变量，所以面板
+里切换即时生效；要强制锁定后端才在 `docker/.env` 里写 `PDF_PARSER_BACKEND=...` —— 此时面板里保存的
+值会被覆盖（页面上会给出提示）。
 
-- **paddle（PaddleOCR-VL-1.6，推荐 GPU，优先级最高）**：指令式整页 OCR。
-  服务端只吃**图片**，所以解析时先用 PyMuPDF 把每页渲染成 PNG（`dpi` 控制清晰度），
-  再逐页送进模型的 `/v1/chat/completions`，拿回一页的 Markdown/HTML 文本。
-  有**可见文字层**的电子版 PDF 仍以 PyMuPDF 的精确行框与字体样式为准（OCR 文本带
-  LaTeX 转义等噪声），此时 OCR 只用来补插图与公式；纯扫描件没有可信文字层，就用
-  OCR 文本按页边距**合成行框**（近似版式）+ PyMuPDF 图片管线兜底。
-  单页请求失败只让那页退回本地抽取（记在 `parser_info.ocr_failed_pages` 与 `warnings`），
-  整份一页都没成功才按回退链换后端。
+### 现在的分工（2026-10）
+
+- **两条解析链，在「⚙ 设置 → 存储 / OCR」里选**：
+  - `auto` / `detection_service_group` / `pymupdf`：**PyMuPDF 文字版式**（精确行框/字号/粗斜体；
+    Figure 图片不使用 PyMuPDF 的内嵌位图/矢量图提取）。
+  - `surya`：**Surya 2 整页 OCR**（见下节）。
+- **图片（PyMuPDF 路线）**：detection-service-group 检测 `Figure` 框，将服务组返回的 `crop` 和 PDF 坐标写入
+  `pages[].images`，前端仍通过文档图片接口加载；裁图里已烘焙的文字不会重复叠加。
+- **公式占位（本地）**：公式按**字体名**判出来后
+  擦成**等长空格**（`math_font._blank_math_spans`），所以正文不会被公式碎片污染，
+  句子切分与翻译照常。
+- **公式内容（可选）**：**detection-service-group**（`formula_table_service_group` 服务组：
+  YOLOv13 检测 → pp-formulanet-plus-l 识别）对**有公式空位的页**返回「公式框 + LaTeX」，
+  写进 `pages[].formula_boxes`；前端按 `bbox_norm × 页面显示宽高` 在页面上覆盖 KaTeX
+  （位置来自公式框、内容来自服务组；见下面「公式是怎么补进来的」）。
+
+### Surya 2 后端（`backend=surya`：整页 OCR + 前端独立渲染）
+
+**整条链路完全使用 Surya 的数据**（不读 PyMuPDF 的文字层/行框/字体，也不跑 detection-service-group）：
+
+1. **客户端**（`backend/surya_parser.py`，需 `pip install surya-ocr`）：PyMuPDF 只负责把页面渲染成
+   图像 → `RecognitionPredictor` 通过 `SURYA_INFERENCE_URL` 调用服务端（`surya_doc_parse_service/`）
+   做整页 OCR → 每页拿到按阅读顺序排好的 blocks（`label` / `polygon` / `html`）；
+   图片类 block（`Picture/Figure/Diagram/ChemicalBlock`）按 polygon 裁剪落盘。
+   ⚠️ 图片类 block 一定是 `skipped=True`/空 html（模型不对图 OCR）——不能当过滤条件。
+2. **转换**（`backend/pdf_parser/backend_surya.py`）：像素坐标 × `72/dpi` 换算成 PDF 点，
+   写进页面 `texts[]`（**块级数据**：`kind`/`label`/`level`/`size`/`line_h`/`text`/`lines[0].runs`/
+   `math`/`html`；公式块是 `kind="formula"` + `latex`），插图写进 `pages[].images`。
+   字号不来自 OCR：按块框与文本量估算（正文统一页基准字号 + 按块框缩字适配）。
+3. **渲染**（`frontend/js/reader2.js::buildSuryaItem`，`DOC.parser === "surya"` 时启用）：块按 bbox
+   绝对定位、**块内正常流式排版**（标题加粗放大、图注/脚注小一号），与 PyMuPDF 路线的
+   「逐行绝对定位 + 行宽适配」是两套；行内公式用解析侧给的精确字符区间就地渲染 KaTeX，
+   独立公式走 KaTeX 块，表格 `html` 白名单渲染（不参与句子选中）。选句/高亮/笔记/翻译
+   沿用同一套句子机制（`.rn` span + canonical 字符区间）。
+4. **失败语义**：Surya 不可用（服务没起 / 本机缺 `surya-ocr`）时**直接报错**，
+   不会悄悄回退 PyMuPDF —— 免得看起来像解析成功了。状态面板里 `surya_ready` 是
+   「服务端 + 客户端都就绪」。
+
+### 文字数据：一行只有一个 run、一个块只有一句
+
+解析结果里**每行只有一个 run**（`text_layer._merge_line_runs`）—— 一块文字就是
+「块 `text` + 每行几何 + 每行文本」三层，行内不再有碎片 span。为此做了两处补偿：
+
+- **补间距**：PyMuPDF 按 span 切字，同一视觉行里两截文字只要字体/字号不同就是两个
+  span，**中间的空隙不体现在字符上**（表格把 `Method` / `Accuracy` 并进同一行最常见）。
+  解析时按 bbox 空隙补一个空格（`text_layer._insert_gap_spaces`，阈值 `0.25 × 字号`），
+  否则合并后会粘成 `MethodAccuracy`。公式字形两侧**一律不补**：那会把一处空格区切断，
+  一条公式在配对时会被拆成两条。
+- **行级样式**：合并取「本行字符数最多的那个 run」的字号/字体（与前端 `bodyRunOf` 同口径），
+  于是行内上标/小字号的碎片不会再让整行字号忽大忽小（"公式后正文变小"的老问题）。
+
+代价（已知并接受）：行内的粗体/斜体/上标与颜色退化成行级样式，真正的上标（`x²` 的 `2`）
+会与正文同号显示；高亮/笔记的字符↔DOM 映射在**含公式的**行上可能略有偏移。
+换来的是渲染与公式内联都退化成「一行一段文字」，实现简单得多。
+
+#### 按句子重切块：一个块 = 恰好一句（`sentences.py`）
+
+**一行不是一句，一块也不一定是一句**：一段话常被公式空位切成好几块，而且两块的
+**行在同一视觉行上左右相接**（实测样本 `p1b45` = `In mathematics, … using the formula`、
+`p1b47` = `, where … the roots.`）。前端 `splitSentences()` 是按**块**切句的，
+所以点一下选中的「句子」就是半句碎片。解析侧现在把它修好：
+
+- `sentences.cut_blocks_by_sentence`（在 `_blank_math_spans` **之前**跑）把一页的块
+  重切成「一句话一块」：
+  1. **行链**：同一视觉行上横向相接（≤ 16pt，或中间只夹着公式字形）的片段并成一组；
+     双栏页的**栏间走廊**（同一 x 带在 ≥3 行上都是空的）不算相接，公式编号 `(12)`/页码也不并；
+  2. **续句**：上组末行与下组首行同栏（左边距差 ≤ 12pt）+ 纵向邻近 + 「上面还没写完
+     （末尾不是 `.!?。！？:`）+ 下面接着写（首字符是小写字母或 `,;)`）」→ 同一条**流**；
+     证据不足就断开（宁缺勿错：断开只是保持现状，接错会把标题/页码粘进句子）；
+  3. **切句**：口径与前端 `reader2.splitSentences` 一致（另加「小数点 `1.1` 不切」与 `。！？`）；
+  4. **落块**：每条句子一块；句子端点落在行内部时按**逐字符几何**（`text_layer._CHAR_X`，
+     来自 `rawdict` 的 `chars[*].bbox`）把行**拆成两段** —— 拆点精确落在字符边界上，
+     run 的 `x0/x1` 也跟着重算，所以公式空位原宽（`_line_gap_widths`）算出来还是原值。
+- 公式判读用「探针文本」（数学字形换成等长空格），公式里的 `.`/`!` 不会被当成句末；
+  整行都是公式字形的行不参与切句，作为**乘客**挂在邻近句子单元上（几何要留给
+  `_absorb_orphan_gaps` 与整行公式回填的落点）。
+- 统计：`sentence_units` / `sentence_merged` / `sentence_line_splits` / `sentence_tail_units`
+  （最后一项 = 末尾没有句末标点的单元数，即「合并不了的碎片」，如标题、表格、页眉）。
+- 不变式：**一个字都不增删**（重解析摘要实测「内容变了 0 处」），公式统计
+  （`formula_spans/chars/spaces/lines/absorbed_lines`、空位处数）**逐项不变**。
+- ⚠️ **块 id**：没被拆、没被合的块沿用原 id（笔记/高亮按 `"<块 id>#<句号>"` 存），
+  其余用 `p{页}s{序号}` —— 所以重解析后，**被切碎过的那几块**上的旧笔记会显示
+  「原文句已不存在」（笔记正文不丢）。译文缓存键是块文本的 sha1，不受影响。
 
 #### 公式是怎么补进来的（版式不动）
 
-电子版 PDF 的**正文与版式完全用 PyMuPDF 的**（精确行框/字号/粗斜体），PaddleOCR-VL
-只负责补它搞不定的**公式**：公式在 PDF 里是一堆碎片化字形（上下标常被拆成同一 y 的多行，
-抽出来就是乱码），而 OCR 输出的是带定界符的正确 LaTeX。
+电子版 PDF 的**正文与版式完全用 PyMuPDF 的**（精确行框/字号/粗斜体），
+**detection-service-group** 只负责补它搞不定的**公式内容**：公式在 PDF 里是一堆碎片化字形
+（上下标常被拆成同一 y 的多行，抽出来就是乱码），而服务组给出的是一条公式的
+**检测框 + pp-formulanet-plus-l 识别的 LaTeX**。
 
-- **行内公式**：拿公式**前后的普通文字**当锚点，在整页文本里定位（锚点可按行内公式
-  拆开的「文字片段」取，否则会跨过公式对不上），把两锚点之间那段字形换成 `\(…\)` —— 前端
-  `renderInlineMath()` 就地换成 KaTeX。**定界符必须用 `\(…\)` 而不是 `$…$`**：前端对单个
-  `$` 有「看起来像数学」的额外判定，`$h = 1$` 这类会被当普通文字、页面上显示成带美元符号的原文。
-- **跨块的行内公式**（论文里极常见：上下标会被 PyMuPDF 拆成独立行，一条公式横跨 3~5 个块）：
-  行内替换表达不了，于是「左行切掉尾部 + 中间几行整体摘掉 + 右行切掉头部（整行右移补回宽度）」，
-  再在这些字形的并集位置合成一个 `kind="formula"` 块交给 KaTeX 覆盖渲染；被切掉的两截作为
-  公式块的内容行保留，公式的字号与可用宽度才准。
-- **独立公式**：用公式**前一句的结尾**和**后一句的开头**当锚点，再按**纵向区间**找出中间那几行
-  字形（不按块顺序找 —— 真论文一页近百块，顺序很乱），摘出来合成一个 `kind="formula"` 块，
-  坐标取这几行的并集 → 前端按 display 模式在**原位置**渲染。公式常画在矢量图表里（那块像素
-  快照里就含着它），所以会先把盖住它的图**按上/下/左/右四块挖个洞**再重渲染，否则会和图里的
-  公式重影。
-- **逐条公式独立判定**：OCR 是按整段输出的，一条公式定位不到只丢它自己，**不牵连同一条
-  OCR 行里的其它公式**（早期的实现是任一条不合规就整条放弃，一段里有一条脏数据就全废了）。
-- **锚点怎么才算对得上**：① 连字先展开（PDF 里 `ﬁnance` 是 U+FB01 一个字符，OCR 给的是
-  7 个字母，不展开永远对不上，详见 `_LIG_EXPAND`）；② 锚点长度**由长到短**试，取第一个
-  「只剩一种自洽组合」的长度；③ 组合有歧义时（页面上两句一模一样的话）用「两个锚点中间
-  是不是公式字形」把错的那个筛掉，而不是要求锚点全页唯一。
-- 对不上就**整条不动**：本地那截冒出这一行正文里没有的单词、要删的片段里混着正文、
-  公式到底还是对不上 —— 任一条不满足就放弃，宁可不变不可切错。
-- 条数记在 `parser_info.math_inline` / `math_inline_split` / `math_display`；用
-  `paddle_ocr_math=false` 可整体关掉。
+1. **擦除**（解析时）：按字体名把数学字形换成**等长空格**，宽度由行框反推
+   （`math_font._line_gap_widths`），所以公式后面的正文仍落回原 x。
+   同一行里挨得够近的几段空格会先并成**一条公式**（`math_font._group_math_pieces`）——
+   一条公式常被正文字体排的标识符（`x = (-b ± √(b²-4ac)) / 2a` 里的 `x`）切成好几段。
+   有空位的页记在内部字段 `pages[]._formula_slots`（不进 doc.json）。
+2. **送检测**：将所有页面渲染 PNG（`dpi` 控制清晰度，
+   `detection_service_group.collect_images`）→ `POST {detection_service_group_url}/router/predict`
+   （JSON + base64 页图）；因为要显示服务组返回的 Figure 裁图，请求始终包含 crop。
+   公式覆盖框仍只从有公式空位的页落地。
+3. **服务组**：router 把页图交给 yolov13 检测公式框（生产者），按类别分流到公式池/表格池，
+   pp-formulanet-plus-l / slanet_plus 并行识别（消费者），最后把 `formula.latex` /
+   `table.html` 追加回检测 JSON —— 详见 `formula_table_service_group/router_service/README.md`。
+4. **落地**（`backend_detection_service_group.apply_formula_boxes`）：将服务组 Figure 的 crop
+   按 PDF 坐标落盘并写入 `pages[].images`；另把
+   `recognized_detections[*].formula` 的 `bbox_norm`（**归一化中心 xywh**，YOLO 口径）
+   与 `latex` 写进 `pages[].formula_boxes`：
 
-> 已知偏保守的一处：独立公式的「候选行」筛选用的是**长单词≤1 个 + 带数学符号**，
-> 像 `t,s = closet+h,s −closet,s` 这种带 `close` 标识符的公式会被当成正文判掉（页面上仍是
-> 字形碎片，但不会误删正文）。放宽这条得先想好更稳的判据。
+   ```json
+   [{"bbox_norm": [0.4965, 0.4061, 0.0878, 0.0158],   // x中心, y中心, 宽, 高（归一化）
+     "latex": "\\zeta_{0}(\\nu)=…", "score": 0.93, "class_name": "DisplayedFormulaLine",
+     "crop": "data:image/png;base64,…"}]            // 框内裁图：KaTeX 渲染失败时前端兜底
+   ```
 
-> 建议：公式多/图片多的论文，解析后重点看 `parser_info.math_inline`、`math_inline_split`、
-> `math_display`、`ghost_text_removed` 四个数，能很快看出 OCR 到底起了多少作用。
+   前端（`frontend/js/r2-math.js` 的 `buildFormulaBoxes`）按
+   `bbox_norm × 当前页面显示宽高` 定位覆盖层，把 KaTeX **等比缩放到框内**；
+   KaTeX 未就绪 / 这条 LaTeX 渲染不出来时，直接用 `crop`（base64 图像）**铺满框兜底**
+   （`detection_service_group_keep_crops=false` 时退回显示 LaTeX 源码）——
+   位置来自公式框、内容来自服务组，两者都不依赖本地空格。
+5. **结果**：顶层 `formula_action` 由 `"space"` 变 `"boxes"`；统计见
+   `parser_info.formula_boxes`（条数）/ `formula_box_pages` / `formula_box_failed` /
+   `formula_box_ms`。没被覆盖的空格位保持**等长空白**不动（屏幕上就是一块空白）。
+
+几处刻意的取舍：
+
+- **只处理擦过公式的页**：没擦除过公式的页即使检测到公式也没有对照物，
+  画上覆盖层只会压住正文原字形。
+- **宁缺勿错**：服务组没返回、返回空、或某条 `latex` 为空就留空，绝不硬猜；
+  失败一律只加一条 warning，**不抛异常** —— 绝不因为服务挂了让整篇解析失败。
+- **服务不可达时要快**：请求前先做一次快速 TCP 探测（≤ 5s），避免解析被读超时拖住。
+- 用 `detection_service_group_enable=false` 可整体关闭服务组图片/公式检测；这时不再回退到
+  PyMuPDF 图片提取。`backend=pymupdf` 也不会显示 Figure 图片。
+- 旧的「整页 OCR → 前后文配对 → 内联进正文」链路（`backend_paddle.py` /
+  `formula_match.py` / `tools/check_formula_match.py`）已**清空为占位壳**；
+  旧码归档在 `history_versions/paddle-ocr-cleared-20261003/`。
 
 ### 解析器升级后：原地重解析（笔记/译文都保留）
 
@@ -429,30 +532,28 @@ python tools/reparse_layout.py <doc_id> 原PDF.pdf             # 原地重解析
 ```
 
 只换 `pages` / `parser` / `parser_info` / 插图；笔记、高亮、译文、阅读进度、分享状态一个不动。
-译文是按「块文本的 sha1」缓存的，补公式会改块文本 → 工具会自动把老译文的键**迁到新文本**上
-（对得上就不用重译，迁移条数会打印出来）。
-- **surya（Surya 2）**：有版面分析（block/polygon），表格/公式的 HTML 一并保留。
-- **pymupdf（本地）**：不依赖任何外部服务，纯本地抽取。
+译文是按「块文本的 sha1」缓存的，解析升级可能改块文本（重切句等）→ 工具会自动把老译文的键
+**迁到新文本**上（对得上就不用重译，迁移条数会打印出来）。
+> ⚠️ 旧版「OCR 整页解析 + 把 LaTeX 注入正文 + 合成 `kind="formula"` 块」已删除；
+> 现在是「PyMuPDF 版式 + detection-service-group 公式框」这一条路，
+> 见本文前面的说明与 `backend/pdf_parser/backend_detection_service_group.py`。
 
-### 数学公式（统一 LaTeX + KaTeX 渲染）
+### 数学公式（KaTeX 渲染）
 
-三个后端的公式在解析时**统一成块的 `latex` 字段**，前端交给 **KaTeX** 渲染（同步 API，随项目内置）：
+公式由 **KaTeX** 渲染（同步 API，随项目内置），落地方式：
 
-- **独立公式**（`kind="formula"` + `latex`）：用 `katex.render(..., {displayMode:true})` 渲染到块的
-  覆盖层上，成功才隐藏原来的字形文本（原始字形可能错位/乱码）；**渲染失败就保留原文**，
-  所以任何情况下都不会比“不动它”更差。
-- **行内公式**：有两条来源，都交给 KaTeX：
-  1. **正文里带定界符的**（`\(…\)` / `$$…$$` / 单 `$…$`）：`renderInlineMath()` 扫描文本节点
-     **原地替换**成 KaTeX 元素（同步、无需重排）。单 `$` 容易和货币符号撞车，所以额外要求
-     内容“像数学”（首尾不接空格且含 `\ _ ^ { }` 之一），否则原样当文字。这条主要服务
-     `paddle`（OCR 直接吐带定界符的 LaTeX）。
-  2. **Surya 解析的正文**：行内数学在 PDF 里是一堆碎片化字形 run，而且常被切成**同一 y 的多段**
-     （PyMuPDF 把上下标当独立行），渲染出来会互相压在一起。但 Surya 的块 HTML 里本来就有正确的
-     LaTeX（`<math>close_{t,s}</math>`）→ 前端把它**对齐回块内字符区间**，在那个位置覆盖渲染
-     KaTeX，原字形改成**透明色**（保留盒子与底色，选中/高亮仍可见、文本选择不被遮挡）。
-     详见下面的“行内公式对齐”。
+- **公式框覆盖层**（新数据，`pages[].formula_boxes`）：detection-service-group 返回的
+  「`bbox_norm` + `latex`」按**页面显示宽高**定位，`buildFormulaBoxes` 就地渲染并把
+  KaTeX 等比缩放到框内（`r2-math.js`）。渲染失败就显示 LaTeX 源码兜底。
+- **旧数据的兼容路径**（重解析前的 doc.json）：
+  * **独立公式块**（`kind="formula"` + `latex`）：用 `katex.render(..., {displayMode:true})`
+    渲染到块覆盖层上，成功才隐藏原来的字形文本；**渲染失败保留原字形**。
+  * **行内公式**：`\(…\)` / `$$…$$` / 单 `$…$` 定界符由 `renderInlineMath()` 扫描文本节点
+    **原地替换**成 KaTeX（单 `$` 容易和货币符号撞车，所以额外要求内容“像数学”）；
+    Surya 时代还有块 HTML `<math>` 对齐回字符区间的行内覆盖层（`inlineMathOf`），
+    保留只为兼容旧 doc.json。
 
-> ⚠️ 三个踩过的坑，改代码时别踩回去：
+> ⚠️ 下面这些是**旧数据兼容路径**（Surya 行内对齐 / Paddle 定界符）踩过的坑，改代码时别踩回去：
 > ① **公式块不能走行内路径**：公式块的 `html` 就是 `<math display="block">…</math>`（一整块数学），
 > 行内对齐会把它当成“一条行内公式”再渲染一遍 → 行外覆盖层 + 行内覆盖层叠在一起，
 > 就是**行外公式重影**。所以 `item.inlineMath = mb ? null : …`。
@@ -591,7 +692,7 @@ HTML 渲染结果。直接复制会把三份都带上（字形重复），而且
 阅读器选中公式块后那个「复制」按钮走同一套口径（`mathTexOf(item)` 优先于 `sentenceText()`），
 不会再把 PDF 抽出来的字形串（可能是乱码）复制出去。
 
-KaTeX 只在需要时**懒加载**（先判断文档里有没有 `latex` 或带定界符的文本），已随项目内置在
+KaTeX 只在需要时**懒加载**（先判断文档里有没有 `formula_boxes`、`latex` 或带定界符的文本），已随项目内置在
 `frontend/vendor/katex/`（v0.16.11，MIT，见同目录 `LICENSE`）：`katex.min.js` + `katex.min.css`
 + 20 个 woff2 字体（共 ~600KB），**运行时完全离线、不发任何网络请求**。
 
@@ -604,19 +705,21 @@ KaTeX 只在需要时**懒加载**（先判断文档里有没有 `latex` 或带�
 > 选中同一份 PDF（或用 `python tools/reparse_layout.py <doc_id> 原PDF`），公式才会被渲染。
 > 注意 `relink_images.py` **只补插图**、不刷新版式，别拿它当重解析用。
 
-启动 PaddleOCR-VL 推理服务（GPU）：
+启动 **detection-service-group**（Figure 检测、公式/表格识别服务组）：
 
 ```bash
-cd ../paddle_ocr_doc_parse_service        # 与本项目同级目录
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-curl http://127.0.0.1:8080/health         # 200 = 引擎已就绪
-curl http://127.0.0.1:8080/v1/models      # 应看到 PaddleOCR-VL-1.6-0.9B
-python test_paddleocr_vl_service.py       # 部署后功能自检（可选）
+cd ../formula_table_service_group        # 与本项目同级目录
+docker compose up -d --build             # 有 GPU 用 docker-compose.gpu.yml
+curl http://127.0.0.1:9003/health        # status=ok 且 downstream 三个都 ok
 ```
 
-客户端只用 `urllib` + PyMuPDF（后者项目本就依赖，负责把 PDF 逐页渲染成图片），
-**不需要额外 `pip install`**：推理在服务端，本进程只渲染/上传图片、解析返回文本、
-并把结果套回版式结构。
+客户端只用 `urllib` + PyMuPDF（后者项目本就依赖，负责把页面渲染成 PNG），
+**不需要额外 `pip install`**：检测/识别都在服务组里跑，本进程只渲染/上传页面图、
+把回传的公式框 + LaTeX 记进 doc.json。
+
+> `paddle_ocr_doc_parse_service/` 与 `config.json` 里的 `paddle_*`、compose 里的
+> `PADDLE_OCR_*` 按“保留配置”处理：PaddleOCR-VL 的旧客户端与配对链路已清空，
+> 这些配置/环境变量不再被读取，仅作记录与回退参考。
 
 ### 插图文字重影（去重影）
 
@@ -690,7 +793,8 @@ cd docker && docker compose up -d --build
 ```
 
 - 已把 surya 接进同一个 Docker 网络时，可用服务名直连（少绕一跳宿主机）：`SURYA_INFERENCE_URL=http://surya-server:8060/v1`。
-- PaddleOCR-VL 同理：app 容器默认用 `PADDLE_OCR_URL=http://host.docker.internal:8080/v1` 连宿主机上的服务；接进同一网络则改成 `http://paddleocr-vl-vllm:8080/v1`。它没有本机客户端依赖（只需 PyMuPDF，镜像里已有），服务能连上就会优先被 `auto` 选中。
+- **detection-service-group 同理**：app 容器默认用 `DETECTION_SERVICE_GROUP_URL=http://host.docker.internal:9003/v1` 连宿主机上的 router_service；接进同一网络则改成 `http://router-service:9003/v1`。它没有本机客户端依赖（只需 PyMuPDF，镜像里已有），`auto`/`detection_service_group` 下图片/公式检测会调它。
+- PaddleOCR-VL 的 `PADDLE_OCR_*` 环境变量**保留**在 compose 里，但对应的客户端已清空、不再被读取（仅作参考）。
 - 只想要 PyMuPDF 的瘦镜像（不要 torch，约省 1GB）：把 `requirements.txt` 里 torch/torchvision/`surya-ocr` 三行拆到单独的 `requirements-surya.txt`，镜像里只装核心依赖即可。
 - **容器内没有 `config.json`**（`Dockerfile` 只 `COPY config.example.json`），`parser` 段靠上面的环境变量注入；想用文件配置就取消 `docker-compose.yml` 里 `../config.json:/app/config.json:ro` 那行注释（宿主机上该文件必须已存在，否则会被建成同名目录）。
 - 排障入口：网页右上角「⚙ LLM 设置」→「PDF 解析后端」会显示**实际生效**的后端和原因；解析产物 `doc.json` 的 `warnings` 也会写明回退原因。
@@ -698,8 +802,8 @@ cd docker && docker compose up -d --build
 验证与排障：
 
 ```bash
-python tools/selftest.py samples/sample.pdf --backend paddle    # PaddleOCR-VL
-python tools/selftest.py samples/sample.pdf --backend surya       # Surya 2
+python tools/selftest.py samples/latex_sample.pdf --backend detection_service_group   # Figure 图片 + 公式增强(detection-service-group)
+python tools/selftest.py samples/sample.pdf --backend pymupdf         # 纯本地、不连服务
 curl http://127.0.0.1:8000/api/config        # 查看解析后端/服务就绪状态
 ```
 
@@ -709,12 +813,12 @@ curl http://127.0.0.1:8000/api/config        # 查看解析后端/服务就绪�
 
 - 在阅读页**点击一句话**，即可选中该句并弹出工具条：`译本段` / `标注` / `笔记` / `复制`。
 - 在正文上**按住左键拖拽**即可选多句（松手后自动吸附到整句），也可以 `Shift+点击` 从当前选区扩展；工具条上的操作会一次作用于所有选中句。
-- `标注` 弹出调色盘：**6 个色块**＝黄/绿/粉 + 3 个自定义色（虚线描边的三个是自定义位，用下方「自定义」里的三个取色器改颜色，改完自动存到**当前账号**名下）；点击色块即用**半透明底色**高亮整句，当前句已用的颜色会加白圈标出；同色再点一次即取消，或点 `清除高亮`。
+- `标注` 弹出调色盘：**6 个色块**＝黄/绿/粉 + 3 个自定义色（虚线描边的三个是自定义位，用下方「自定义」里的三个取色器改颜色，改完自动存到**当前账号**名下）；点击色块即用**半透明底色**高亮整句，当前句已用的颜色会加白圈标出；同色再点一次即取消，或点 `清除高亮`。句内的**公式框会跟着同色高亮**（与文字同款底色；暗夜下同款霓虹字色 + 外发光）—— 公式是页面级覆盖层，由 `reader2.js` 的 `paintFormulaMarks()` 按几何与高亮句匹配后上色。
 - `笔记` 直接在页面右侧弹出卡片（与选中句子同高，不挤占正文），写完保存即可；卡片上带句子原文摘要，正文里同时有下划线标记。顶部“显示笔记”可一键收起全部笔记卡片。
 - 顶部“📑 目录”打开**左侧目录栏**：建论文时就存下了 **PDF 自带书签**（零成本、最准）；PDF 没书签时，首次展开面板会自动让 **LLM 读全文排一份目录**（每页只喂“候选标题行”，省 token），结果存库、不再重复提取；点目录项直接跳页，滚动时自动高亮当前所在小节，底部有「重新提取」。展开目录时正文会整体右移并自动适宽，不会被盖住。
 - 顶部“翻译本页 / 翻译全文”用于批量离线翻译；配合“显示译文”开关查看双语；译文卡字号会随页面缩放一起变化。
 - 底部居中的**页码可以点**：直接输入页号按 `回车` 跳到该页（`Esc` 取消）；页码超出范围会提示并留在原页。滚动时它会自动跟着更新。
-- 选中**多个句子**后，工具条按钮变为 `翻译所选句子`：只翻译选中的句子（选区跨段落时按段落分片），结果显示为独立卡片；不同选区的卡片**可以同时留着**，卡内 `清除` 或再点一次按钮收起。它与整段译文**互斥**（两者不同时显示，切换时另一边自动收起）。单选一句仍是原来的 `译本段`（整段翻译）。
+- 选中**多个句子**后，工具条按钮变为 `翻译所选句子`：只翻译选中的句子（选区跨段落时按段落分片），结果显示为独立卡片，挂在**最后一个被选句子**下方（多句连选不会插在所选句中间）；不同选区的卡片**可以同时留着**，卡内 `清除` 或再点一次按钮收起。它与整段译文**互斥**（两者不同时显示，切换时另一边自动收起）。单选一句仍是原来的 `译本段`（整段翻译）。
 - 无可用 LLM（没 Key 且没装 `deep-translator`）时，阅读页会提示“未配置翻译服务”，点右上角「⚙ LLM 设置」填完即生效（不用重启）；`config.json` 仍支持 `deepseek_base_url` / `deepseek_model` 等自定义。
 - 顶部「显示译文」是**带记忆**的开关，而且**记忆也跟账号走**（存在 `users.prefs.show_zh`）：勾一次以后，刷新/重新登录都会自动把已缓存的整段译文展开；“所选句译文”卡片与它是互斥的（有卡片时会自动取消勾选，卡片清掉后再勾即可）。
 
@@ -731,12 +835,13 @@ curl http://127.0.0.1:8000/api/config        # 查看解析后端/服务就绪�
 - **MongoDB 不可用时会回退本地 JSON**（`auto` 模式）：这是可用性妥协，不是“双写”。想要数据只在库里，就设 `APP_STORAGE=mongo`；回退期间产生的数据留在 `data/*.json`，需要时用 `tools/migrate_to_mongo.py` 搬进去。
 - 句子切分基于英文标点启发式(对 Fig./e.g./et al. 等常见缩写做了保护)，极少数学术句可能切分不准。
 - “所选句译文”按**段落内连续句片段**切片翻译：选区跨段落时会切成多片分则调用翻译、再合并展示（每片按文本哈希缓存，重复翻译不重复计费）；极短片段（纯公式/符号）可能被翻译服务原样返回。卡片自身（锚点+译文）会存到 `seltrans`，所以刷新/重新登录后会自动回来；点卡上的「清除」或切到“整段译文”模式会把它从服务端一并删掉。
-- 译文内联显示采用“顶开版式”的近似布局；含复杂多栏混排时，译文下方可能有轻微位置偏移。
+- 译文内联显示采用“顶开版式”的近似布局：译文/笔记卡把正文顶开时，**页面级公式框覆盖层（`.fbox`）会跟着下方正文一起移动**，卡片收起/删除后也随正文一起还原（`reader2.js` 的 `relayoutPage()` 每次重排都会重算位移，**没有卡片时也会重算以便清掉旧位移**）。位移分两步：① 每张卡把**同栏**（x 重叠）下方内容顶开；② **传递**——被顶开的宽元素（典型是跨栏插图）会把压在它正下方的内容（如插图下方的标题/页码）也一起带下去，页面高度随之自动增长；含复杂多栏混排时仍可能有轻微位置偏移。
 - 译文卡与笔记卡统一用 `--page-scale = clamp(pageW / 900, 0.78, 1.2)` 字号基准：页面因窗口窄而自动适宽时，卡内文字同步缩小；如需完全等比（不设上下限），把 `reader2.js` 里 `applyNoteChrome()` 的 `clamp(...)` 去掉即可。
 - 文末 AI 面板的两个框高度统一由 CSS 变量 `--ai-panel-h` 控制（在 `style.css` 的 `.ai-end` 里，默认 `clamp(320px, 56vh, 620px)`）：内容再多也不会把框撑长，超出部分框内滚动；想固定成具体值直接改成如 `560px` 即可。
 - 左右结构时两个框宽度**恒为 2 : 3**（左对话 : 右整理）：`.ai-chat` / `.ai-sum` 的 `flex-basis`（300 / 450）与 `flex-grow`（2 / 3）按同一比例写、收缩也按 basis 等比，所以任何可用宽度下比例都不变（**不要给它们加 `max-width`**，那会打断比例）。换行阈值 = 两个 basis 之和（约 764px），再窄就由 JS 换成上下**等宽**结构。
 - 「进行中」状态只作为一条 `#aiMsgs .ai-msg.pending` 气泡追加在对话流末尾（样式在 `style.css` 的 `.ai-msg.pending` / `@keyframes aiPulse`）；前端用 `aiBusyWhat`（`""` / `"summary"` / `"chat"`）区分忙碌类型，`renderAiSummary()` 不会因为忙碌而覆盖已有整理结果，并会保留 `scrollTop`。
-- 流式回复用 `aiDraft`（`null` = 不在流式 / 字符串 = 已收到文本）描述：`renderAiChat()` 把 `pending` 气泡换成 `.streaming` 气泡，后续增量由 `pushAiDelta()` 直接改 `.txt` 的 `textContent`；`.streaming .txt::after` 是个闪烁的 `▍` 光标。流到一半失败时**保留已收到的文字**（不把字收回去），一个字都没收到才把提问退回输入框。
+- 流式回复用 `aiDraft`（`null` = 不在流式 / 字符串 = 已收到文本）描述：`renderAiChat()` 把 `pending` 气泡换成 `.streaming` 气泡，后续增量由 `pushAiDelta()` 重画那一个气泡的 `.txt`（Markdown 整体重渲，节流到每帧一次）；`.streaming .txt::after` 是个闪烁的 `▍` 光标。流到一半失败时**保留已收到的文字**（不把字收回去），一个字都没收到才把提问退回输入框。
+- **AI 文字按 Markdown 渲染**：渲染器是前端自带的 `r2-md.js`（`window.R2Md`，不引第三方库、无构建步骤）：标题 / 无序·有序列表（可嵌套）/ 粗体·斜体·删除线 / 行内代码 / 围栏代码块（角标显示语言名）/ 引用 / 分隔线 / 链接 / 表格 / 任务框（另 `R2Md.inline()` 供主题标题这种单行文字用）。安全上**先转义再组装**，链接只放行 http / https / mailto / 站内相对地址，渲染器出意外时退回纯文本。对话气泡（AI 侧）与整理里的总览 / 要点 / 关联 / 疑问 / 下一步都过它；**提问保持原样显示**（pre-wrap）。文字里带 `$…$` / `\(…\)` / `$$…$$` 时，由 `r2-ai.js` 再调 r2-math 的 `renderInlineMath()` 就地换 KaTeX（`ensureKatex()` 懒加载，加载完重画面板；`.md code / .md pre` 里的定界符不转换，代码块保持原样）。
 - 高亮自定义色与「显示译文」开关都是**账号级偏好**（存在数据库的 `users.prefs` 里，与账号密码同一份记录；不回退到浏览器本地）：同一账号在任何浏览器/设备上都是这套色；文档里存的是**色位**（`c1`/`c2`/`c3`），所以改了某个自定义色位，之前用该色位的高亮会一起变色（想单次固定颜色就先设好再用）。
 - **改配色请优先改 CSS 变量**（`style.css` 顶部 `:root` 与 `html.dark` 两份语义色板：`--bg / --card / --ink / --mut / --line / --accent-soft / --bg-soft / --bg-chip / --page-bg / --ti-*`（译文卡）/ `--nt-*`（笔记卡）/ `--warn-* / --err-* / --ok-* / --tag-*` …）。组件里再写死浅色就会在暗夜模式下“一块白”。正文颜色与荧光高亮是 inline 样式，切主题时会通过 `window` 的 `themechange` 事件重算（见 `reader2.js` 的 `pageInk()` / `hlPaint()`）。
 - 「AI 辅助阅读」的图标是**自家 sparkle SVG**（不用 emoji）：`style.css` 里的 `--ai-mark-svg` 只当遮罩（`mask-image`），填色走渐变 `--ai-1 → --ai-2`，所以换色/换主题只改这两个变量；用量处写 `<i class="ai-mark"></i>`（文末面板、目录侧栏、整理空白态）。暗色下额外加了 `drop-shadow` 外发光。

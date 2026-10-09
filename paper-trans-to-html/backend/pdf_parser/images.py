@@ -242,6 +242,16 @@ def _extract_raster(page, doc, images_dir, pno, idx0: int = 0) -> list[dict]:
 # =====================================================================
 #  图片 · 矢量图形聚类 / 栅格化
 # =====================================================================
+#  判据对齐 `pymupdf_extract.py` 的 `page_figures`（同名样本、同一批图必须得到同一结果）。
+#  关键差别：**候选不设逐元素门槛**，是不是图形由**合并后的区域**决定 —— 真图的线条
+#  可以极细、节点可以很小，逐条卡线宽/面积会把整张图剔光。
+_FIG_MIN_PARTS = 3        # 成图至少要有几个绘图元素（孤立细线只有 1~2 个）
+_FIG_MIN_W = 30.0         # 图形区域最小宽（磅）
+_FIG_MIN_H = 20.0         # 图形区域最小高（磅）
+_FIG_GAP = 5.0            # 聚类间隙（磅）：两元素相距超过它就算两张图
+_FIG_PAD = 2.0            # 栅格化外扩（磅）：描边压在区域边界上，不外扩会被裁掉半条
+
+
 def _cluster_rects(rects, gap: float = 6.0) -> list[fitz.Rect]:
     """把彼此靠近的图形外框合并成若干“图形区域”。"""
     items = list(rects)
@@ -292,28 +302,22 @@ def _extract_vector_figures(page, images_dir, pno, texts, placed_raster,
         return out
 
     pw, ph = page.rect.width, page.rect.height
+    # 候选形状**不设逐元素门槛**（照 `pymupdf_extract.page_figures` 的做法）。
+    # 旧规则要求「填充色，或描边线宽 ≥0.15」「单元素 ≥12x12 且面积 ≥1600」，实测
+    # samples/latex_sample.pdf 的流程图**一条都过不了**：图外框线宽 0.058~0.121pt，
+    # 节点圆只有 700~1400pt² —— 于是 shapes 为空、p3/p4 的矢量图从来没被抽出来。
+    # 「是不是图形」交给合并后的区域判（见下面的元素数 / 最小区域 / 二维尺寸三闸）。
     shapes: list[fitz.Rect] = []
     for d in drawings:
-        fill = d.get("fill") is not None
-        # 线宽门槛不能高：真图的线条往往很细 —— 实测一篇论文的图形线宽是
-        # {0.19:79, 0.27:1, 0.4:2, 0.54:31, 0.88:20}，按 0.8 卡的话**真图几乎全被排除**
-        # （只有 20 条 0.88 的能过），图就只能靠“白色大底板被误当成矢量图”兜底 ——
-        # 而那条路会把底板罩住的正文当“图里的字”删掉。取 0.15 能把 0.19 起的真图收进来。
-        stroke = d.get("color") is not None and (d.get("width") or 0) >= 0.15
-        if not (fill or stroke):
-            continue
         r = d.get("rect")
         if not r or r.is_empty:
             continue
-        if r.width < 12 or r.height < 12:
-            continue
-        if r.get_area() < 40 * 40:
-            continue
+        r = fitz.Rect(r)
         if r.get_area() > 0.96 * pw * ph:  # 整页色块/背景
             continue
-        shapes.append(fitz.Rect(r))
+        shapes.append(r)
 
-    if not shapes:
+    if len(shapes) < _FIG_MIN_PARTS:
         return out
     # 先剔掉「背景型」大色块：一整块占了大半页宽的填充矩形是页面底色/装饰框，
     # 不是图表。不剔掉的话它会**把周围零散的小图形(真图)串成一大片"伪图"**，
@@ -321,18 +325,34 @@ def _extract_vector_figures(page, images_dir, pno, texts, placed_raster,
     # —— 实测一个 536x310 的浅色填充矩形让 141 行正文凭空消失。
     shapes = [r for r in shapes
               if not (r.width > 0.5 * pw and r.get_area() > 0.25 * pw * ph)]
-    if not shapes:
+    if len(shapes) < _FIG_MIN_PARTS:
         return out
-    regions = _cluster_rects(shapes, gap=8)
+    # 聚类用定点式的 `_merge_rects` 而不是单趟的 `_cluster_rects`，间隙取 5.0 —— 与脚本
+    # `page_figures(gap=5.0)` 同一套。旧的 gap=8 会把两个子图并成一张（样本 p4 的两个
+    # 子图相距 6.68pt，恰好卡在 5 和 8 之间，脚本输出 2 张图）。
+    regions = _merge_rects(shapes, gap=_FIG_GAP)
 
     text_rects = _text_line_rects(texts)
     used = [fitz.Rect(it["x"], it["y"], it["x"] + it["w"], it["y"] + it["h"]) for it in placed_raster]
 
     idx = idx0 + len(placed_raster)
     for reg in regions:
-        w, h = reg.width, reg.height
-        if w < 30 or h < 30:
+        if reg.width < _FIG_MIN_W or reg.height < _FIG_MIN_H:
             continue
+        # 区域里必须有**成组的二维**元素：分式线/根号横线/表格横线都是又长又扁的单条线，
+        # 「元素数 ≥3」挡掉孤立细线，「至少一个二维元素」挡掉“长横线 + 端点圆点”这种
+        # （实测表格横线：区域 154x0，先被最小高度挡掉）。
+        inside = [r for r in shapes if r in reg]      # Rect in Rect 等价于被包含
+        if len(inside) < _FIG_MIN_PARTS:
+            continue
+        if not any(r.width > 1 and r.height > 1 for r in inside):
+            continue
+        # 往外扩一点再栅格化：细线框的描边压在区域边界上，不外扩会被裁掉半条。
+        # 扩出来的矩形同时就是输出的 x/y/w/h —— 前端把图铺在这个框上，两者必须一致。
+        reg = fitz.Rect(reg.x0 - _FIG_PAD, reg.y0 - _FIG_PAD,
+                        reg.x1 + _FIG_PAD, reg.y1 + _FIG_PAD)
+        reg.intersect(page.rect)
+        w, h = reg.width, reg.height
         # 与文字高度重叠 → 多为表格/公式/装饰，不作为独立图。
         # 但阈值要**分大小看**：小区域(≤3% 页面积)常常是「图里带框的文字/标签」，
         # 文字占比本来就高(实测 Figure 1 的框 39%~43%)；只有大区域才可能是
