@@ -5,14 +5,19 @@
 ## 更新
 
 1. [26/10/8] surya 解析与pymupdf解析分离，解析pdf和渲染路径独立，解决了surya解析时公式和图片重影问题，增加表格渲染
+   
    <center>
-    <img src="./function_display/formulas.png" width=400px><img src="./function_display/tables.png" width=400px>
+    <img src="./function_display/formulas.png" width=400px>
+    <img src="./function_display/tables.png" width=400px>
    </center>
-2. [26/10/8] 增加了多种翻译目标语言
+   
+3. [26/10/8] 增加了多种翻译目标语言
+
    <center>
    <img src="./function_display/translate.png" width=400px>
    </center>
-3. [26/10/8] ai辅助阅读增加markdown样式渲染。
+   
+5. [26/10/8] ai辅助阅读增加markdown样式渲染。
 
 ## Pdf 解析模块
 
