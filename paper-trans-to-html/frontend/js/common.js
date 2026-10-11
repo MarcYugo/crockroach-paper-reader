@@ -544,6 +544,7 @@ const OCR_BACKENDS = [
   { value: "auto", name: "自动", sub: "PyMuPDF 文字版式 + 服务组图片/公式检测", badge: "默认" },
   { value: "detection_service_group", name: "服务组图片/公式检测", sub: "detection-service-group" },
   { value: "surya", name: "Surya 2 推理服务", sub: "整页 OCR：文字 / 公式 / 插图" },
+  { value: "unlimited_ocr", name: "Unlimited-OCR 推理服务", sub: "整页 OCR：文字 / 公式 / 表格 / 插图" },
   { value: "pymupdf", name: "PyMuPDF 本地解析", sub: "不跑图片/公式检测" },
 ];
 function ocrBackendMeta(v) {
@@ -698,6 +699,7 @@ function openLlmModal(tab) {
               <option value="auto">自动（PyMuPDF 文字版式 + 服务组图片/公式检测）</option>
               <option value="detection_service_group">服务组图片/公式检测（detection-service-group）</option>
               <option value="surya">Surya 2 推理服务（整页 OCR：文字 / 公式 / 插图）</option>
+              <option value="unlimited_ocr">Unlimited-OCR 推理服务（整页 OCR：文字 / 公式 / 表格 / 插图）</option>
               <option value="pymupdf">PyMuPDF 本地解析（不跑图片/公式检测）</option>
             </select>
           </div>
@@ -1067,14 +1069,17 @@ function openLlmModal(tab) {
          提供 Figure 裁图与公式框 + LaTeX 覆盖层；
        · surya：整页 OCR —— 文字 / 公式（<math>→LaTeX）/ 插图全用 Surya 的数据，
          前端按 Surya 数据独立渲染（不回落 PyMuPDF）；
+       · unlimited_ocr：整页 OCR —— 文字 / 公式（LaTeX）/ 表格（HTML）/ 插图全用
+         Unlimited-OCR 的数据，前端按它的数据独立渲染（不回落 PyMuPDF）；
        · pymupdf：纯本地，不连任何服务。
      服务没起 / 依赖没装时这里如实显示状态。 */
   const OCR_TEXT = {
     detection_service_group: "图片/公式检测服务组（detection-service-group）",
     surya: "Surya 2 推理服务（文字 / 公式 / 插图全用 Surya）",
+    unlimited_ocr: "Unlimited-OCR 推理服务（文字 / 公式 / 表格 / 插图全用 OCR）",
     pymupdf: "PyMuPDF 本地解析（不跑图片/公式检测）",
   };
-  const OCR_NAME = { auto: "自动", detection_service_group: "detection-service-group", surya: "Surya 2", pymupdf: "PyMuPDF" };
+  const OCR_NAME = { auto: "自动", detection_service_group: "detection-service-group", surya: "Surya 2", unlimited_ocr: "Unlimited-OCR", pymupdf: "PyMuPDF" };
 
   function renderParser(p) {
     const el2 = $("lmParser");
@@ -1086,7 +1091,7 @@ function openLlmModal(tab) {
     const eff = p.effective || "pymupdf";
     let html = `${eff === "pymupdf" ? "📄" : "✅"} 实际使用：` +
       `<b>${esc(OCR_TEXT[eff] || eff)}</b>（配置：<code>${esc(p.backend || "")}</code>）`;
-    // 两条解析链的就绪状态：detection-service-group（PyMuPDF 路）与 Surya 2
+    // 各解析链的就绪状态：detection-service-group（PyMuPDF 路）、Surya 2、Unlimited-OCR
     html += `<br>${p.detection_service_group_ready ? "✅" : "⛔"} detection-service-group ` +
       `<code>${esc(p.detection_service_group_url || "")}</code>` +
       (p.detection_service_group_enabled === false ? "（当前配置不跑图片/公式检测）" : "");
@@ -1095,6 +1100,11 @@ function openLlmModal(tab) {
       (p.surya_client_ready === false ? "（本机缺 surya-ocr 客户端依赖）" : "") +
       (p.surya_message ? `<span title="${esc(p.surya_message)}">` : "") +
       "</span>";
+    html += `<br>${p.unlimited_ocr_ready ? "✅" : "⛔"} Unlimited-OCR ` +
+      `<code>${esc(p.unlimited_ocr_url || "")}</code>` +
+      `（模型 <code>${esc(p.unlimited_ocr_model || "")}</code>）` +
+      (p.unlimited_ocr_message
+        ? `<span title="${esc(p.unlimited_ocr_message)}"> ⓘ</span>` : "");
     if (p.message) html += `<br>ℹ️ ${esc(p.message)}`;
     if (p.env_override) html += `<br>⚠️ 已设置环境变量 <code>PDF_PARSER_BACKEND</code>，` +
       `它会<b>覆盖</b>这里保存的值（环境变量优先级高于 <code>config.json</code>）—— ` +

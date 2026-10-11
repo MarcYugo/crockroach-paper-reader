@@ -16,6 +16,13 @@
     （见 `frontend/js/reader2.js::buildSuryaItem`）。Surya 不可用时直接报错
     （`backend/surya_parser.SuryaUnavailable`，经转换接口映成页面上的失败提示），
     **不会悄悄回退 PyMuPDF**。
+  * `backend` = `unlimited_ocr`：整页 OCR 走 Unlimited-OCR
+    （`backend_unlimited_ocr._parse_with_unlimited_ocr`），与 `surya` 同级：文字/公式
+    （LaTeX）/表格（HTML）/插图裁图/阅读顺序全部来自 Unlimited-OCR 回包，前端按
+    `DOC.parser === "unlimited_ocr"` 走它**自己那套**独立的块级渲染
+    （见 `frontend/js/reader2.js::buildUnlimitedItem`，与 Surya 那套各自维护）。
+    服务不可用时直接报错（`backend/unlimited_ocr.UnlimitedOcrUnavailable`），
+    **不会悄悄回退 PyMuPDF**。
 
 对外签名与返回结构**保持不变**(仍是 `parser` / `parser_info` / `toc` /
 `warnings`)，所以 `converter.py` / `app.py` / `tools/*` 都不用改。
@@ -29,6 +36,7 @@ from typing import Optional
 from .backend_detection_service_group import (apply_formula_boxes)
 from .backend_pymupdf import (_parse_with_pymupdf)
 from .backend_surya import (_parse_with_surya)
+from .backend_unlimited_ocr import (_parse_with_unlimited_ocr)
 from .options import (load_options)
 
 
@@ -64,7 +72,7 @@ def _formula_postprocess(result: dict, pdf_path: Path, images_dir: Optional[Path
     """
     backend = str(opts.get("backend") or "").lower()
     if backend not in ("auto", "detection_service_group"):
-        return result                     # pymupdf = 不要外部服务；surya = 待重写
+        return result                     # pymupdf = 不要外部服务；surya / unlimited_ocr = 独立链
     if not opts.get("detection_service_group_enable"):
         return result
     return apply_formula_boxes(result, pdf_path, opts, warnings,
@@ -98,14 +106,17 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
       * `surya`：整页 OCR 走 Surya 2 —— 文字、公式（`<math>`→LaTeX）、插图都来自
         Surya，**不使用 PyMuPDF 版式**；失败直接抛 `SuryaUnavailable`
         （不会悄悄回退，免得看起来像解析成功了）；
+      * `unlimited_ocr`：整页 OCR 走 Unlimited-OCR —— 文字、公式（LaTeX）、表格
+        （HTML）、插图都来自它的回包，**不使用 PyMuPDF 版式**；失败直接抛
+        `UnlimitedOcrUnavailable`（同样不回退）；
       * `pymupdf`：纯本地 PyMuPDF 版式，不请求 detection-service-group，
         因此不会提取或显示 Figure 图片；
       * `auto` / `detection_service_group`：PyMuPDF 版式 + detection-service-group
         补公式框和 Figure 图片（见 `_formula_postprocess`）。
 
     返回值：
-      * parser      `"pymupdf"` / `"surya"`
-      * parser_info 解析统计(公式→空格的条数 / Surya 块与图片条数等)
+      * parser      `"pymupdf"` / `"surya"` / `"unlimited_ocr"`
+      * parser_info 解析统计(公式→空格的条数 / OCR 块与图片条数等)
       * toc         PDF 自带书签目录 `[{level,title,page}]`（可能为空）
       * warnings    说明性信息(列表，可能为空)
     """
@@ -123,6 +134,17 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
                         "Surya 2 整页 OCR 提供；不使用 PyMuPDF 版式，"
                         "也不跑 detection-service-group")
         result = _parse_with_surya(pdf_path, images_dir, opts)
+        result["warnings"] = warnings
+        return result
+
+    if opts["backend"] == "unlimited_ocr":
+        # Unlimited-OCR 也是**独立解析链**（与 surya 同级、各自维护）：文字 / 公式 /
+        # 表格 / 插图全部用它自己的回包，前端按 `parser === "unlimited_ocr"`
+        # 走它自己那套块级渲染（见 backend_unlimited_ocr 模块文档）。
+        warnings.append("解析后端 'unlimited_ocr'：文字、公式（LaTeX）、表格与插图都由 "
+                        "Unlimited-OCR 整页 OCR 提供；不使用 PyMuPDF 版式，"
+                        "也不跑 detection-service-group")
+        result = _parse_with_unlimited_ocr(pdf_path, images_dir, opts)
         result["warnings"] = warnings
         return result
 
@@ -144,9 +166,9 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
     #   "boxes" = 页面上叠了公式框覆盖层（pages[].formula_boxes，前端按 bbox_norm
     #             在页面上渲染 KaTeX，见 frontend/js/r2-math.js）；
     #   "space" = 公式字形已擦成等长空白（服务组不可用 / 一条都没返回时）。
-    # "surya"（公式来自 Surya 的 <math>）走的是函数开头那条独立分支，不会到这里。
-    # 旧的 "inline"（LaTeX 内联进正文文本）随 PaddleOCR 配对链路一起移除了，
-    # 但旧 doc.json 里的这个值前端仍认（兼容）。
+    # "surya" / "unlimited_ocr"（公式来自整页 OCR 回包）走的是函数开头那两条独立
+    # 分支，不会到这里。旧的 "inline"（LaTeX 内联进正文文本）取自早期 OCR 链路，
+    # 随代码删除已不再产生，但旧 doc.json 里的这个值前端仍认（兼容）。
     if any(pg.get("formula_boxes") for pg in result.get("pages") or []):
         result["formula_action"] = "boxes"
     pop_private(result)          # `_formula_slots` 只给公式后处理用

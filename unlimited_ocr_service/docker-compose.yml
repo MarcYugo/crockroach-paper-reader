@@ -1,0 +1,50 @@
+name: unlimited-ocr
+
+services:
+  unlimited-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-vllm/vllm-openai:unlimited-ocr-cu129}
+        INSTALL_MODELSCOPE: ${INSTALL_MODELSCOPE:-false}
+    image: ${IMAGE_NAME:-unlimited-ocr-service:cu129}
+    restart: unless-stopped
+
+    # vLLM uses /dev/shm for its shared caches and NCCL buffers; the 64 MB
+    # container default corrupts large page images. `ipc: host` matches the
+    # official recipe — replace it with `shm_size: "16gb"` where host IPC is
+    # not allowed.
+    ipc: host
+
+    ports:
+      - "${VLLM_PORT:-9010}:${VLLM_PORT:-9010}"
+
+    environment:
+      # Serves the locally downloaded snapshot mounted below instead of hitting
+      # a hub at startup, so the container works fully offline.
+      MODEL_ID: ${MODEL_ID:-/weights}
+      SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-Unlimited-OCR}
+      VLLM_PORT: ${VLLM_PORT:-9010}
+      VLLM_DTYPE: ${VLLM_DTYPE:-bfloat16}
+      # These values are tuned for smaller GPUs; override them in .env if needed.
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.80}
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: ${VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS:-0}
+      VLLM_LIMIT_MM_PER_PROMPT: "${VLLM_LIMIT_MM_PER_PROMPT:-{\"image\": 16}}"
+      # vLLM only enforces the key when it is non-empty.
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+
+    volumes:
+      # Local snapshot: `modelscope download --model PaddlePaddle/Unlimited-OCR
+      # --local_dir ./models/Unlimited-OCR` (or the Hugging Face equivalent).
+      # Read-only, and MODEL_ID must point at the same in-container path.
+      - ${LOCAL_WEIGHTS_DIR:-./models/Unlimited-OCR}:/weights:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -2,24 +2,28 @@
 
 见包文档 `backend/pdf_parser/__init__.py`。
 
-「文字版式后端」有两个实现：
+「文字版式后端」有三个实现：
 
   * **PyMuPDF**（`backend_pymupdf.py`）：本地抽取文字层；Figure 图片和公式框由
     **detection-service-group**（`formula_table_service_group` 服务组）提供
     （见 `backend_detection_service_group.py`）；
   * **Surya 2**（`../surya_parser.py` + `backend_surya.py`）：整页 OCR，文字 /
-    公式 / 插图全部来自 Surya，前端按 `parser === "surya"` 独立渲染。
+    公式 / 插图全部来自 Surya，前端按 `parser === "surya"` 独立渲染；
+  * **Unlimited-OCR**（`../unlimited_ocr.py` + `backend_unlimited_ocr.py`）：整页
+    OCR，文字 / 公式（LaTeX）/ 表格（HTML）/ 插图全部来自 Unlimited-OCR，
+    前端按 `parser === "unlimited_ocr"` 独立渲染（与 Surya 那套各自维护）。
 
 `status()` 的返回字段是对外契约（`/api/settings/parser` 与网页
-「⚙ 设置 → 存储 / OCR」面板都在读）：`detection_service_group_*` 与 `surya_*`
-是两套协议；`surya_ready` 是**真探测**（`GET /models`，超时 `PROBE_TIMEOUT`），
-`surya_client_ready` 是本机 surya-ocr 客户端依赖是否装好；两者都就绪才能用
-`surya` 后端解析。旧的 `paddle_*` 配置项**不再被读取**（键保留在 config.json 里，
-仅作记录/回退参考）。
+「⚙ 设置 → 存储 / OCR」面板都在读）：`detection_service_group_*`、`surya_*` 与
+`unlimited_ocr_*` 是三套协议；`surya_ready` 与 `unlimited_ocr_ready` 都是**真探测**
+（`GET /models`，超时 `PROBE_TIMEOUT`），`surya_client_ready` 是本机 surya-ocr
+客户端依赖是否装好；两者（探测 + 客户端依赖）都就绪才能用 `surya` 后端解析。
+旧 PaddleOCR 链路的配置项（`paddle_*`）**已随解析/渲染代码一起删除**，
+不再被读取也不再识别（旧值 `backend="paddle"` 会走“未知后端”分支按 auto 处理）。
 
 默认常量的家在各客户端模块：detection-service-group 在 `../detection_service_group.py`、
-Surya 在 `../surya_parser.py` —— config.json 里 `parser` 段的键与这里一一对应，
-改动作时两边一起对齐。
+Surya 在 `../surya_parser.py`、Unlimited-OCR 在 `../unlimited_ocr.py` —— config.json 里
+`parser` 段的键与这里一一对应，改动作时两边一起对齐。
 
 ⚠️ 命名沿革：这套配置以前叫 `ft_group_*` / `FT_GROUP_*`（后端取值 `ftgroup`）。
 改名后**旧键不再读取**，只在检测到旧键/旧环境变量时各加一条 warning（不影响运行）；
@@ -46,6 +50,12 @@ from ..surya_parser import (
     PROBE_TIMEOUT as SURYA_PROBE_TIMEOUT,
     check_server as surya_check,
     client_ready as surya_client_ready)
+from ..unlimited_ocr import (
+    DEFAULT_MODEL as DEFAULT_UNLIMITED_OCR_MODEL,
+    DEFAULT_TIMEOUT as DEFAULT_UNLIMITED_OCR_TIMEOUT,
+    DEFAULT_URL as DEFAULT_UNLIMITED_OCR_URL,
+    PROBE_TIMEOUT as UNLIMITED_OCR_PROBE_TIMEOUT,
+    check_server as unlimited_ocr_check)
 
 
 # =====================================================================
@@ -61,20 +71,26 @@ from ..surya_parser import (
 #    改这里时顺手对一下 `app.py::CONFIG_FILE`（两者必须指向同一份）。
 CONFIG_FILE = Path(__file__).resolve().parents[2] / "config.json"
 
-# 合法的后端取值。旧配置里的 `paddle` 会在 `load_options` 里映射成 `auto`，
-# `ftgroup` 会映射成 `detection_service_group`（都是历史上的取值，保留识别只为把
-# 老配置安顿好）。`surya` 是独立解析链（见 `backend_surya.py` / `../surya_parser.py`）。
-PARSER_MODES = ("auto", "detection_service_group", "surya", "pymupdf")
+# 合法的后端取值。旧配置里的 `ftgroup` 会映射成 `detection_service_group`（历史取值，
+# 保留识别只为把老配置安顿好；旧 PaddleOCR 链路的 `paddle` 已随代码删除，不再识别）。
+# `surya` / `unlimited_ocr` 都是独立整页 OCR 链（分别见 `backend_surya.py` /
+# `backend_unlimited_ocr.py`）。
+PARSER_MODES = ("auto", "detection_service_group", "surya", "unlimited_ocr", "pymupdf")
 
-# ---- 图片/公式检测增强(detection-service-group)与 Surya 的默认参数 ----
+# ---- 图片/公式检测增强(detection-service-group)与两条整页 OCR 链的默认参数 ----
 # 默认常量住在各自的客户端模块（导入见文件头）：
 #   detection-service-group -> ../detection_service_group.py
 #   surya                   -> ../surya_parser.py（默认地址与 surya_doc_parse_service 端口一致）
+#   unlimited_ocr           -> ../unlimited_ocr.py（默认地址与 unlimited_ocr_service 端口一致）
 
 DEFAULT_OPTIONS: dict = {
-    "backend": "auto",                # auto | detection_service_group | surya | pymupdf
+    "backend": "auto",                # auto | detection_service_group | surya | unlimited_ocr | pymupdf
     "surya_url": DEFAULT_SURYA_URL,
     "surya_backend": DEFAULT_SURYA_BACKEND,
+    "unlimited_ocr_url": DEFAULT_UNLIMITED_OCR_URL,        # 推理服务地址
+    "unlimited_ocr_model": DEFAULT_UNLIMITED_OCR_MODEL,    # vLLM 的 served-model-name
+    "unlimited_ocr_timeout": int(DEFAULT_UNLIMITED_OCR_TIMEOUT),  # 单页请求超时(秒)
+    "unlimited_ocr_api_key": "",      # 服务端设了 --api-key 才需要（vLLM 默认不校验）
     "detection_service_group_url": DEFAULT_DETECTION_SERVICE_GROUP_URL,       # 服务组地址
     "detection_service_group_timeout": DEFAULT_DETECTION_SERVICE_GROUP_TIMEOUT,  # 预测超时(秒)
     "detection_service_group_conf": 0.25,        # 检测置信度阈值(传给服务组)
@@ -96,6 +112,10 @@ _ENV_KEYS = {
     "backend": "PDF_PARSER_BACKEND",
     "surya_url": "SURYA_INFERENCE_URL",
     "surya_backend": "SURYA_INFERENCE_BACKEND",
+    "unlimited_ocr_url": "UNLIMITED_OCR_URL",
+    "unlimited_ocr_model": "UNLIMITED_OCR_MODEL",
+    "unlimited_ocr_timeout": "UNLIMITED_OCR_TIMEOUT",
+    "unlimited_ocr_api_key": "UNLIMITED_OCR_API_KEY",
     "detection_service_group_url": "DETECTION_SERVICE_GROUP_URL",
     "detection_service_group_timeout": "DETECTION_SERVICE_GROUP_TIMEOUT",
     "detection_service_group_conf": "DETECTION_SERVICE_GROUP_CONF",
@@ -179,7 +199,7 @@ def load_options(config_file: Optional[Path] = None,
             if "local_image_fallback" in section:
                 warnings.append("解析配置项 local_image_fallback 已停用；"
                                 "Figure 图片只使用检测端（detection-service-group / "
-                                "Surya）返回的裁图")
+                                "Surya / Unlimited-OCR）返回的裁图")
         except Exception as exc:
             warnings.append(f"读取解析配置 {cfg_file} 失败，使用默认值：{exc}")
     elif not os.environ.get(_ENV_KEYS["backend"]):
@@ -203,12 +223,6 @@ def load_options(config_file: Optional[Path] = None,
         opts["backend"] = backend
 
     mode = str(opts["backend"] or "").strip().lower()
-    if mode == "paddle":
-        # 旧配置兼容：PaddleOCR-VL 的「配对 + 内联」链路已清空，
-        # 公式增强改走 detection-service-group（auto 时同样会启用）。
-        warnings.append("解析后端 'paddle' 已停用（配对链路已清空），本次按 auto 处理"
-                        "（公式增强走 detection-service-group）")
-        mode = "auto"
     if mode == "ftgroup":
         # 旧名兼容：`ftgroup` 已改名为 `detection_service_group`。
         warnings.append("解析后端 'ftgroup' 已改名为 'detection_service_group'，"
@@ -245,6 +259,16 @@ def load_options(config_file: Optional[Path] = None,
     opts["surya_url"] = _normalize_url(opts["surya_url"], DEFAULT_SURYA_URL)
     opts["surya_backend"] = (str(opts["surya_backend"] or "").strip().lower()
                              or DEFAULT_SURYA_BACKEND)
+    opts["unlimited_ocr_url"] = _normalize_url(opts["unlimited_ocr_url"],
+                                                DEFAULT_UNLIMITED_OCR_URL)
+    opts["unlimited_ocr_model"] = (str(opts["unlimited_ocr_model"] or "").strip()
+                                   or DEFAULT_UNLIMITED_OCR_MODEL)
+    opts["unlimited_ocr_api_key"] = str(opts["unlimited_ocr_api_key"] or "").strip()
+    key = "unlimited_ocr_timeout"
+    try:
+        opts[key] = max(30, int(opts[key]))
+    except (TypeError, ValueError):
+        opts[key] = DEFAULT_OPTIONS[key]
     opts["detection_service_group_url"] = _normalize_url(
         opts["detection_service_group_url"], DEFAULT_DETECTION_SERVICE_GROUP_URL)
     key = "detection_service_group_timeout"
@@ -292,6 +316,12 @@ def status(config_file: Optional[Path] = None) -> dict:
         c_ok, c_msg = surya_client_ready()
     except Exception as exc:
         c_ok, c_msg = False, f"客户端依赖探测失败：{exc}"
+    try:
+        u_ok, u_msg = unlimited_ocr_check(opts["unlimited_ocr_url"],
+                                          opts["unlimited_ocr_model"],
+                                          timeout=UNLIMITED_OCR_PROBE_TIMEOUT)
+    except Exception as exc:   # 同上：探测异常只是"不可用"
+        u_ok, u_msg = False, f"探测失败：{exc}"
 
     backend = opts["backend"]
     enhance_on = bool(opts.get("detection_service_group_enable")) and backend in (
@@ -303,13 +333,23 @@ def status(config_file: Optional[Path] = None) -> dict:
         else:
             why = "推理服务不可用" if not s_ok else "本机缺少 surya-ocr 客户端依赖"
             message = f"解析后端现为 surya，但{why} —— 上传 / 重解析会失败（见下方明细）"
+    elif backend == "unlimited_ocr":
+        if u_ok:
+            message = ("文字、公式（LaTeX）、表格与插图由 Unlimited-OCR 整页 OCR 提供，"
+                       "前端按 Unlimited-OCR 数据独立渲染；detection-service-group 不参与")
+        else:
+            message = ("解析后端现为 unlimited_ocr，但 Unlimited-OCR 推理服务不可用"
+                       " —— 上传 / 重解析会失败（见下方明细）")
     else:
         message = ("文字版式走 PyMuPDF 本地解析；detection-service-group "
                    "用于提供 Figure 图片并识别公式框与 LaTeX"
                    + ("（服务已就绪）" if f_ok else "（服务不可用，本次跳过检测增强）"))
     return {
         "backend": backend,              # 用户保存的值(auto/detection_service_group/…)
-        "effective": "surya" if backend == "surya" else "pymupdf",   # 实际生效的版式后端
+        # 实际生效的版式后端：surya / unlimited_ocr 是独立整页 OCR 链，其余走 PyMuPDF
+        "effective": ("surya" if backend == "surya"
+                      else "unlimited_ocr" if backend == "unlimited_ocr"
+                      else "pymupdf"),
         "env_override": bool(os.environ.get(_ENV_KEYS["backend"])),
         "detection_service_group_url": opts["detection_service_group_url"],
         "detection_service_group_ready": f_ok,
@@ -322,6 +362,11 @@ def status(config_file: Optional[Path] = None) -> dict:
         "surya_service_ready": bool(s_ok),
         "surya_client_ready": bool(c_ok),
         "surya_message": f"{s_msg}；{c_msg}",
+        "unlimited_ocr_url": opts["unlimited_ocr_url"],
+        "unlimited_ocr_model": opts["unlimited_ocr_model"],
+        # 纯 HTTP 服务：真探测（GET /models）通过就能用，没有本机客户端依赖
+        "unlimited_ocr_ready": bool(u_ok),
+        "unlimited_ocr_message": u_msg,
         "dpi": opts["dpi"],
         "image_dpi": opts["image_dpi"],
         "message": message,

@@ -2,7 +2,7 @@
 
 把 PDF 解析为与原文版式一致的布局数据：
   - 文字块 texts：绝对坐标 bbox；PyMuPDF 分支带多行(lines：几何 + **行文本**)，
-    Surya 分支是块级数据（一行 `runs` + 块内流式排版，见下）；
+    Surya / Unlimited-OCR 分支是块级数据（一行 `runs` + 块内流式排版，见下）；
   - 图片   images：绝对坐标 bbox + 落盘文件名。
 
 ⚠️ **PyMuPDF 分支：一行只有一个 run**（`text_layer._merge_line_runs`）：行内不再有
@@ -25,14 +25,24 @@
 ⚠️ 重切**只改分组、不改字符**，所以必须排在 `_blank_math_spans` **之前**
 （擦除/slots 都按当时的块结构算偏移，排在前面就不需要任何偏移重映射）。
 
-⚠️ **文字版式后端有两个**：
+⚠️ **文字版式后端有三个**：
 
   * **PyMuPDF 本地抽取**（`backend_pymupdf.py`，`backend` = `auto`/`detection_service_group`/
     `pymupdf`）：Figure 图片与公式增强由 **detection-service-group**
     （`formula_table_service_group` 服务组）提供(见 `backend_detection_service_group.py`，
     客户端 `../detection_service_group.py`)；新流程是「**PyMuPDF 提取文字版式，
-    服务组检测公式并提供 Figure 裁图**」，不使用 PyMuPDF 的图片提取结果，
-    也不是旧的「OCR 整页解析 → 配对 → 内联」。
+    服务组检测公式并提供 Figure 裁图**」，不使用 PyMuPDF 的图片提取结果。
+  * **Surya 2 整页 OCR**（`backend_surya.py` + 客户端 `../surya_parser.py`，
+    `backend` = `surya`）：文字 / 公式（`<math>`→LaTeX）/ 插图裁图 / 阅读顺序全部来自
+    Surya 的版面 block，**不使用 PyMuPDF 版式**；前端按 `doc.parser === "surya"` 走
+    独立的块级流式渲染（`frontend/js/reader2.js::buildSuryaItem`）。Surya 不可用时
+    直接报错，不回退 PyMuPDF。
+  * **Unlimited-OCR 整页 OCR**（`backend_unlimited_ocr.py` + 客户端 `../unlimited_ocr.py`，
+    `backend` = `unlimited_ocr`）：文字 / 公式（LaTeX）/ 表格（HTML）/ 插图裁图 /
+    阅读顺序全部来自 Unlimited-OCR 的回包，**不使用 PyMuPDF 版式**；前端按
+    `doc.parser === "unlimited_ocr"` 走它**自己那套**独立块级渲染
+    （`frontend/js/reader2.js::buildUnlimitedItem`，与 Surya 那套各自维护）。
+    服务不可用时直接报错，不回退 PyMuPDF。
   * **Surya 2 整页 OCR**（`backend_surya.py` + 客户端 `../surya_parser.py`，
     `backend` = `surya`）：文字 / 公式（`<math>`→LaTeX）/ 插图裁图 / 阅读顺序全部来自
     Surya 的版面 block，**不使用 PyMuPDF 版式**；前端按 `doc.parser === "surya"` 走
@@ -85,23 +95,27 @@ PyMuPDF 后端做什么：
 `parse_pdf` 的签名与返回结构**保持不变** —— `converter.py`、`app.py` 与 `tools/*`
 都不用改：`backend` / `options` / `config_file` 参数仍在；`pymupdf`/`auto`/
 `detection_service_group` 走 PyMuPDF 版式（`detection_service_group` 决定是否补公式框
-和 Figure 图片），`surya` 走独立整页 OCR 分支（文字/公式/插图都用 Surya 数据）。
+和 Figure 图片），`surya` / `unlimited_ocr` 各走**独立整页 OCR 分支**（文字/公式/
+插图都用各自服务的数据，两条链互不共用代码）。
 顶层 `formula_action` 与页级 `formula_boxes` 是**增量**字段(旧调用方忽略即可)；
 都会被 `converter` 一起写进 doc.json → `/reparse`。`formula_action` 取值：
 `"boxes"`（服务组公式框覆盖层）/ `"space"`（公式擦成空格）/ `"surya"`（Surya 的
-`<math>` LaTeX，前端行内覆盖层 + 独立公式块）/ 旧数据里的 `"inline"`。
+`<math>` LaTeX）/ `"unlimited_ocr"`（Unlimited-OCR 回包的 LaTeX；两者都是前端
+行内覆盖层 + 独立公式块）/ 旧数据里的 `"inline"`。
 
 配置契约：`config.json` 的 `parser` 段、`/api/settings/parser` 与网页
-「⚙ 设置 → 存储 / OCR」面板用的是 `detection_service_group_*` / `surya_*` 那些键；
+「⚙ 设置 → 存储 / OCR」面板用的是 `detection_service_group_*` / `surya_*` /
+`unlimited_ocr_*` 那些键；
 `options.status()` 返回 `detection_service_group_ready` /
 `detection_service_group_enabled` / `detection_service_group_url` /
-`detection_service_group_message` / `surya_*` —— `detection_service_group_ready` 与
-`surya_ready` 都是**真探测**（`GET /health` / `GET /models`；`surya_ready` 还要求
-本机 surya-ocr 客户端依赖就绪，细分字段 `surya_service_ready` / `surya_client_ready`）。
-旧的 `paddle_*` 配置项**不再被读取**（键与 compose 里的 `PADDLE_OCR_*` 环境变量
-已保留，仅作记录/回退参考）；旧配置里的 `backend="paddle"`
-会被映射成 `auto` 并记一条 warning；旧名 `ft_group_*`/`FT_GROUP_*`/`ftgroup`
-同样不再读取，但会被检测到并提醒（后端取值 `ftgroup` 会就地映射成新名）。
+`detection_service_group_message` / `surya_*` / `unlimited_ocr_*` ——
+`detection_service_group_ready`、`surya_ready` 与 `unlimited_ocr_ready` 都是**真探测**
+（`GET /health` / `GET /models`；`surya_ready` 还要求本机 surya-ocr 客户端依赖就绪，
+细分字段 `surya_service_ready` / `surya_client_ready`）。
+旧 PaddleOCR 链路的 `paddle_*` 配置项与解析/渲染代码**已整体删除**（不再读取、
+不再识别；旧配置里的 `backend="paddle"` 会走“未知后端”分支按 auto 处理）；
+旧名 `ft_group_*`/`FT_GROUP_*`/`ftgroup` 同样不再读取，但会被检测到并提醒
+（后端取值 `ftgroup` 会就地映射成新名）。
 
 # ---------------------------------------------------------------------
 #  本包的模块划分(从原来的单文件 pdf_parser.py 拆出)：
@@ -114,6 +128,7 @@ PyMuPDF 后端做什么：
 #    backend_pymupdf.py  版式后端 · PyMuPDF（公式字形→等长空格）
 #    backend_detection_service_group.py  图片/公式增强 · detection-service-group
 #    backend_surya.py    版式后端 · Surya 2 整页 OCR（块级数据，前端独立渲染）
+#    backend_unlimited_ocr.py 版式后端 · Unlimited-OCR 整页 OCR（块级数据，前端独立渲染）
 #    entry.py            入口 parse_pdf(+ 公式后处理挂载点 / pop_private)
 #  下面仍把内部名字再导出一次，保证 `pdf_parser.<原名字>` 照旧可用
 #  (新代码建议直接从对应子模块 import)。
@@ -138,6 +153,7 @@ from .backend_pymupdf import (_blank_math_and_prune, _local_page,
                               _strip_font_keys)
 from .backend_detection_service_group import apply_formula_boxes
 from .backend_surya import _parse_with_surya
+from .backend_unlimited_ocr import _parse_with_unlimited_ocr
 from .math_text import (_ANCHOR_LENS, _ANCHOR_MIN_TOTAL, _ANCHOR_RANK_GAP,
                         _ANCHOR_RANK_MIN, _ANCHOR_SPAN_MAX, _DISPLAY_MATH_RE,
                         _GLYPH_CLS, _GLYPH_RE, _LIG_EXPAND,

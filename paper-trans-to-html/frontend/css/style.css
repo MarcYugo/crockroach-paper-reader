@@ -257,7 +257,8 @@ a { color: var(--accent); text-decoration: none; }
 .blk.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .blk.sel .ln { background: rgba(47, 111, 237, .07); }
 
-/* 公式块：两个后端(PaddleOCR/Surya)的 LaTeX 都由 KaTeX 渲染。公式块**不渲染原文字行**
+/* 公式块：整页 OCR 后端（Surya 2 / Unlimited-OCR）与旧数据的 LaTeX 都由 KaTeX 渲染。
+   公式块**不渲染原文字行**
    (后端也不再下发原字形)，所以这里不再需要靠隐藏行来避免重影 —— `.blk.has-math .ln`
    那条留着只为兼容重解析前的旧数据。 */
 .blk.has-math { cursor: default; }
@@ -351,6 +352,73 @@ a { color: var(--accent); text-decoration: none; }
 .blk.sy .katex-inline,
 .blk.sy .katex-inline .katex,
 .blk.sy .katex-inline .katex * { white-space: nowrap; }
+
+/* ============ Unlimited-OCR 解析的文档：块级流式排版（reader2.js::buildUnlimitedItem） ============
+   与上面 Surya 那套是**各自独立的两份样式**（类名前缀 ul-*）：观感约定相同 ——
+   正文两端对齐、标题加粗、图注/脚注/页眉页脚淡化、表格描边、行内公式不折行。 */
+.blk.ul .ln.ulln { position: static; white-space: normal; overflow-wrap: break-word; }
+/* 正文类块（解析侧 align="justify"）：与 Surya 同一口径的两端对齐；
+   `text-align-last: left` 把末行显式钉在左对齐，与原 PDF 的末行一样自然收尾。 */
+.blk.ul[data-align="justify"] .ulln { text-align: justify; text-align-last: left; }
+.blk.ul.ul-heading .ulln { font-weight: 700; }
+/* 竖排条带（旋转 90° 的页眉/水印）：内容整体旋转、自下而上排 */
+.blk.ul.ul-vertical .ulln {
+  position: absolute; left: 0; top: 100%;
+  width: max-content; white-space: nowrap;
+  transform: rotate(-90deg); transform-origin: left top;
+}
+/* 图注/脚注/页眉页脚淡化：颜色在 .rn 上是内联的（styleRun），只能用整体透明度 */
+.blk.ul.ul-footnote { opacity: .8; }
+.blk.ul.ul-header, .blk.ul.ul-footer { opacity: .55; }
+/* 参考文献（ref_text）：比正文淡一点，与图注同档 */
+.blk.ul.ul-reference { opacity: .92; }
+/* 表格：三线表。模型回包通常只有 td，没有 thead/th，因此兼容以 colspan/rowspan
+   标记的两行表头；普通单行表头则用首行作为表头分隔线。 */
+.blk.ul .ultable {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+}
+.blk.ul .ultable caption {
+  width: 100%;
+  color: var(--mut);
+  font-size: .9em;
+  line-height: 1.4;
+  text-align: right;
+}
+.blk.ul .ultable table {
+  border-collapse: collapse;
+  width: 100%;
+  border-top: 1.5px solid var(--mut);
+  border-bottom: 1.5px solid var(--mut);
+  font-family: "Times New Roman", Times, "Noto Serif", SimSun, serif;
+}
+.blk.ul .ultable td, .blk.ul .ultable th {
+  border: 0;
+  padding: 3px 6px;
+  vertical-align: top;
+}
+.blk.ul .ultable thead tr:last-child > td,
+.blk.ul .ultable thead tr:last-child > th {
+  border-bottom: 1px solid var(--mut);
+}
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child:not(:has([colspan], [rowspan])) > td,
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child:not(:has([colspan], [rowspan])) > th,
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr > td,
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr > th {
+  border-bottom: 1px solid var(--mut);
+}
+.blk.ul .ultable thead,
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child,
+.blk.ul .ultable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr {
+  font-weight: 700;
+}
+/* 行内公式（ulInlineMath 就地渲染的 KaTeX）：**绝不换行** —— 公式内部允许折行的话，
+   一个公式会被拆到几行上去（KaTeX 的 HTML 里本来就有可断点）。 */
+.blk.ul .katex-inline,
+.blk.ul .katex-inline .katex,
+.blk.ul .katex-inline .katex * { white-space: nowrap; }
 
 /* detection-service-group 公式框覆盖层：解析侧下发 pages[].formula_boxes（bbox_norm 为
    归一化中心 xywh），r2-math.js 按「bbox_norm × 页面显示宽高」定位这个盒子，

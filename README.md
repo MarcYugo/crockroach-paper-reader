@@ -1,23 +1,25 @@
 # CrockRoach Paper Reader - Pdf 转 HTML 阅读应用
 
-> AI 辅助工具为 Deepseek-v4-flash/Deepseek-v4.1-flash + VScode copilot
+> AI 辅助工具为 Deepseek-v4-flash/Deepseek-v4.1-flash/GPT-6-Luna + VScode copilot
 
 ## 更新
 
 1. [26/10/8] surya 解析与pymupdf解析分离，解析pdf和渲染路径独立，解决了surya解析时公式和图片重影问题，增加表格渲染
    
    <center>
-    <img src="./function_display/formulas.png" width=400px>
-    <img src="./function_display/tables.png" width=400px>
+    <img src="./function_display/formulas.png" width=400px><img src="./function_display/tables.png" width=400px>
    </center>
-   
-3. [26/10/8] 增加了多种翻译目标语言
 
+2. [26/10/8] 增加了多种翻译目标语言
+   
    <center>
    <img src="./function_display/translate.png" width=400px>
    </center>
+
+3. [26/10/8] ai辅助阅读增加markdown样式渲染。
+4. [26/10/11] 增加 Unlimited-OCR 解析和渲染路径，调整表格渲染样式为三线表。
    
-5. [26/10/8] ai辅助阅读增加markdown样式渲染。
+   <center><img src="./function_display/table-style.png"></center>
 
 ## Pdf 解析模块
 
@@ -38,6 +40,12 @@
 - 按版面分块还原阅读顺序，插图自动裁剪保存；
 - 表格保留结构，公式识别为 LaTeX 并渲染成数学公式；
 - 电子版论文仍以原始精确版式为准，扫描件用识别结果还原。
+
+### 3. Unlimited-OCR
+
+接入 **Unlimited-OCR 推理服务**，Unlimited-OCR模型做版面分析、文本和图表的检测和识别（部署方式见 `unlimited_ocr_service`）。
+
+- 逐页识别，文本、图片和表格
 
 <!-- ### 3. Paddle-OCR
 
@@ -98,7 +106,7 @@ LLM 设置预设了OpenAI、Anthoripic、deepseek和本地模式可供选择，�
 - [x] ~~公式解析优化，重影缺失等问题~~
 - [x] ~~图片显示，子图caption重影缺失等问题~~
 - [ ] pymupdf 本地解析优化
-- [ ] unlimited ocr 解析和渲染路径实现
+- [x] ~~unlimited ocr 解析和渲染路径实现~~
 
 
 <!-- https://github.com/MarcYugo/crockroach-paper-reader -->

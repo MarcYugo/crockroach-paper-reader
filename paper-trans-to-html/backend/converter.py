@@ -34,6 +34,9 @@ def convert(store: Store, doc_id: str, pdf_path: Path, source_name: str,
         公式框 + LaTeX 由 detection-service-group 提供；
       * surya：整页 OCR 走 Surya 2，文字/公式/插图全部用 Surya 的数据
         （前端按 `parser === "surya"` 走独立渲染），Surya 不可用时直接报错；
+      * unlimited_ocr：整页 OCR 走 Unlimited-OCR，文字/公式/表格/插图全部用它的
+        回包数据（前端按 `parser === "unlimited_ocr"` 走它自己那套独立渲染），
+        服务不可用时直接报错；
       * pymupdf：纯本地、不调用外部服务。
     实际使用的后端与告警会记到 doc.json 里，便于排障。
     """
@@ -72,7 +75,9 @@ def convert(store: Store, doc_id: str, pdf_path: Path, source_name: str,
         #   "boxes" = 页面上叠了公式框覆盖层（pages[].formula_boxes，前端按 bbox_norm
         #             在页面上渲染 KaTeX —— detection-service-group 可用时的正常路径）；
         #   "space" = 公式字形已擦成等长空白（服务不可用 / 一条都没返回）；
-        #   "inline" = 旧 PaddleOCR 配对链路的产物，仅存在于重解析前的旧 doc.json。
+        #   "surya" / "unlimited_ocr" = 公式来自整页 OCR 回包的 LaTeX（行内区间 +
+        #             独立公式块）；"inline" 是早期 OCR 链路的历史取值，
+        #             仅存在于重解析前的旧 doc.json。
         # 这个字段是给排障与分流用的。
         "formula_action": parsed.get("formula_action"),
         "pages": parsed["pages"],

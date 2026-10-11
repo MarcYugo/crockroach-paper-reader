@@ -1203,7 +1203,9 @@ def api_config(request: Request):
         "backend": tr.backend,
         "llm_owner": user["username"],
         # PDF 解析后端：auto / detection_service_group（PyMuPDF 版式 + 图片/公式检测）
-        # / surya（整页 OCR：文字/公式/插图全用 Surya 数据）/ pymupdf（纯本地）
+        # / surya（整页 OCR：文字/公式/插图全用 Surya 数据）
+        # / unlimited_ocr（整页 OCR：文字/公式/表格/插图全用 Unlimited-OCR 数据）
+        # / pymupdf（纯本地）
         "parser": pdf_parser.status(CONFIG_FILE),
         # 数据存储后端：mongo(MongoDB) / json(本地文件回退)
         "storage": _storage_state(),
@@ -1211,7 +1213,8 @@ def api_config(request: Request):
 
 
 # ---------------- PDF 解析后端切换 ----------------
-PARSER_BACKENDS = ("auto", "detection_service_group", "surya", "pymupdf")
+PARSER_BACKENDS = ("auto", "detection_service_group", "surya", "unlimited_ocr",
+                   "pymupdf")
 
 
 def _write_parser_backend(backend: str) -> None:
@@ -1244,7 +1247,8 @@ def api_settings_parser_get(request: Request):
 
 @app.post("/api/settings/parser")
 def api_settings_parser_set(request: Request, payload: dict = Body(...)):
-    """切换 PDF 解析后端：auto / detection_service_group / surya / pymupdf。
+    """切换 PDF 解析后端：auto / detection_service_group / surya / unlimited_ocr /
+    pymupdf。
 
     安装级配置(写 config.json 的 parser.backend)，与本机所有账号共用。
     若环境变量 PDF_PARSER_BACKEND 已设置，它会覆盖这里的取值

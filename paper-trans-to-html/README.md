@@ -8,7 +8,7 @@
    - **多账号 / 切换账号**：登录页本身就有「登录 / 注册新账号」两个页签 —— **不登录也能注册**（默认开启，见 `ALLOW_SIGNUP`）、也能直接换另一个账号登录（登录页的「使用其他账号登录 →」会清空输入框，避开浏览器回填）；右上角头像 →「账号」页签可以查看全部账号（含各自论文数）、新增账号、删除其他账号（可选是否连论文一起删）。**切换账号有两种方式**：点列表里的某个账号（整行可点，登录页会把**账号名自动填好**，只需输密码），或用「切换账号（退出登录）」按钮。**论文数据按账号隔离**，各账号互不可见（详见下方「数据存储」与功能 8）。
    - **注销账号（自助删除）**：同一个「账号」页签底部有「⚠️ 注销当前账号」——需重输**当前密码 + 用户名**并二次确认，之后账号与它名下的**全部论文数据**（版式数据/高亮/笔记/译文/图片）一起永久删除、无法恢复，随后自动退出到登录页。若注销的是最后一个账号，服务会回到「首次使用 · 创建管理员账号」状态。
 2. **版式还原**：文字块与图片按原 PDF 坐标/字号/字体/颜色重建；每条文字行还会自动按 PDF 线框适配宽度，双栏/紧排时不会因字体宽度差异而侵入中间空隙造成文字重合。
-3. **图片与公式识别有两个后端可选**：默认 `auto` = PyMuPDF 提取文字版式 + detection-service-group 检测 `Figure`/公式框；`surya` = 整页 OCR（文字 / 公式 `<math>`→LaTeX / 插图裁图全部来自 Surya 2，前端按 Surya 数据独立渲染，不回落 PyMuPDF）；服务不可用时文字版式仍可用（仅 PyMuPDF 路线），Surya 路线则直接报错。
+3. **图片与公式识别有三个后端可选**：默认 `auto` = PyMuPDF 提取文字版式 + detection-service-group 检测 `Figure`/公式框；`surya` = 整页 OCR（文字 / 公式 `<math>`→LaTeX / 插图裁图全部来自 Surya 2，前端按 Surya 数据独立渲染，不回落 PyMuPDF）；`unlimited_ocr` = 整页 OCR（文字 / 公式 LaTeX / 表格 / 插图裁图全部来自 Unlimited-OCR，前端按它自己的数据独立渲染，不回落 PyMuPDF）。服务不可用时文字版式仍可用（仅 PyMuPDF 路线），两条整页 OCR 路线则直接报错。
 4. **翻译（非实时、英译中）**：
    - 点击任意句子 → “译本段”，在**该段之后**显示整段中文译文，并自动把后续版式内容顶开、不遮挡；
    - **多选句子时只翻译所选句**：拖选多句后点 `翻译所选句子`，只把**选中的那几个句子**送去翻译，结果显示在一张带 `所选句译文` 标题的卡片里（虚线黄框，可点 `清除`）；选区跨段落时按段落切成多段分别翻译再合并展示，再点一次同一选区即可收起；
@@ -59,7 +59,7 @@ backend/           后端(FastAPI)
   mongo_store.py   模块七 · MongoDB 存储实现(集合/索引/各存储后端)
   storage.py       存储装配(按 APP_STORAGE 选 MongoDB 或本地 JSON 回退)
   settings.py      模块五 · 运行时设置(LLM 服务地址/Key/模型；每账号最多 3 套可切换)
-  pdf_parser/      模块一 · 文档解析(PDF → 版式布局数据；文字版式 = PyMuPDF 或 Surya 2)
+  pdf_parser/      模块一 · 文档解析(PDF → 版式布局数据；文字版式 = PyMuPDF / Surya 2 / Unlimited-OCR)
     __init__.py    门面：设计说明 + 对外接口(parse_pdf / status) + 内部名字再导出
     options.py     解析配置 / 图片与公式检测服务探测 / status()
     text_layer.py  文字层抽取(字体族、行框、行内样式)
@@ -68,11 +68,12 @@ backend/           后端(FastAPI)
     backend_pymupdf.py  版式后端 · PyMuPDF（公式字形 → 等长空格）
     backend_detection_service_group.py  图片/公式增强 · detection-service-group
     backend_surya.py    版式后端 · Surya 2 整页 OCR（块级数据，前端独立渲染）
-    backend_paddle.py / formula_match.py  【已清空】旧 PaddleOCR 配对链路(占位壳)
+    backend_unlimited_ocr.py  版式后端 · Unlimited-OCR 整页 OCR（块级数据，前端独立渲染，与 Surya 各自维护）
     math_text.py / math_font.py   公式：文本工具 / 字体判据与字形→空格
     entry.py       入口 parse_pdf(+ 公式后处理挂载点)
   detection_service_group.py  detection-service-group 客户端(图片/公式/表格服务组，JSON+base64 页面图)
   surya_parser.py  Surya 2 推理服务客户端（整页 OCR / 插图裁剪 / 块 HTML→文本·runs·LaTeX）
+  unlimited_ocr.py  Unlimited-OCR 推理服务客户端（整页 OCR / 插图裁剪 / 版式项解析，只用标准库+PyMuPDF）
   converter.py     模块二 · 文档转换(解析结果落盘为论文文档+图片)
   records.py       模块三 · 论文阅读记录(本地 JSON 版，MongoDB 不可用时回退)
   translate.py     译文服务(OpenAI 兼容接口 / Google 兜底 + 连通性探测 + 流式对话 chat_stream)
@@ -337,21 +338,22 @@ python tools/make_sample_pdf.py   # 生成样例 PDF
 python tools/selftest.py          # 校验“文档解析”模块(文字块/图片抽取)
 python tools/selftest.py xxx.pdf --backend detection_service_group  # 连 detection-service-group 验证公式框 + LaTeX
 python tools/selftest.py xxx.pdf --backend surya   # 走 Surya 2 整页 OCR（需服务已起 + 本机已装 surya-ocr）
+python tools/selftest.py xxx.pdf --backend unlimited_ocr   # 走 Unlimited-OCR 整页 OCR（需服务已起）
 python tools/reparse_layout.py --list               # 看已上传的论文用哪个后端/有多少公式框
 python tools/mongo_check.py       # MongoDB 连接体检(参数从哪读/能否连上/怎么修)
 python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建业务账号
 # 然后把 samples/sample.pdf 拖到首页即可体验完整阅读流程
-# （旧的「空位 × OCR LaTeX」配对自检已随该链路清空，见 tools/check_formula_match.py 的说明）
+# （旧的「空位 × OCR LaTeX」配对自检已随 PaddleOCR 链路一起删除，不再提供）
 ```
 
-## 文档解析后端（PyMuPDF+detection-service-group / Surya 2 两条路线）
+## 文档解析后端（PyMuPDF+detection-service-group / Surya 2 / Unlimited-OCR 三条路线）
 
 解析后端由 `config.json` 的 `parser` 段控制（环境变量优先于配置文件），也可在网页
 「⚙ 设置 → 存储 / OCR」里直接切换（安装级配置，写回 `config.json`）：
 
 | 配置 | 说明 |
 | --- | --- |
-| `backend` | `auto`(默认) / `detection_service_group` / `surya` / `pymupdf`。`auto`/`detection_service_group`：PyMuPDF 文字版式 + detection-service-group 提供 **Figure 裁图与公式增强**；`pymupdf` 不调用外部服务且不显示 Figure；`surya`：**整页 OCR**——文字/公式（`<math>`→LaTeX）/插图全部来自 Surya 2，**不使用 PyMuPDF 版式**，前端按 `parser === "surya"` 独立渲染（需本机装 `surya-ocr` 客户端，见 `requirements.txt`），不可用时直接报错不回退。旧值 `paddle`（等同 `auto`）与 `ftgroup`（等同 `detection_service_group`）仍被接受，均会记一条 warning |
+| `backend` | `auto`(默认) / `detection_service_group` / `surya` / `unlimited_ocr` / `pymupdf`。`auto`/`detection_service_group`：PyMuPDF 文字版式 + detection-service-group 提供 **Figure 裁图与公式增强**；`pymupdf` 不调用外部服务且不显示 Figure；`surya`：**整页 OCR**——文字/公式（`<math>`→LaTeX）/插图全部来自 Surya 2，前端按 `parser === "surya"` 独立渲染（需本机装 `surya-ocr` 客户端，见 `requirements.txt`）；`unlimited_ocr`：**整页 OCR**——文字/公式（LaTeX）/表格/插图全部来自 Unlimited-OCR，前端按 `parser === "unlimited_ocr"` 独立渲染。两条 OCR 链都**不使用 PyMuPDF 版式**，不可用时直接报错不回退。旧值 `ftgroup`（等同 `detection_service_group`）仍被接受；旧值 `paddle` 已随代码删除、不再识别（按 `auto` 处理并记一条 warning） |
 | `detection_service_group_url` | detection-service-group（formula_table_service_group 的 router_service）地址，默认 `http://127.0.0.1:9003/v1` |
 | `detection_service_group_timeout` | 一次预测（检测+识别）整体超时秒数(默认 600；长文档识别需等待数分钟) |
 | `detection_service_group_conf` | 检测置信度阈值(默认 0.25) |
@@ -359,7 +361,11 @@ python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建�
 | `detection_service_group_keep_crops` | 公式渲染失败时是否保留兜底裁图；Figure 图片显示必需的裁图始终开启 |
 | `surya_url` | Surya 推理服务地址，默认 `http://127.0.0.1:8060/v1`（服务端见仓库根 `surya_doc_parse_service/`） |
 | `surya_backend` | 服务端类型：`llamacpp`(默认) / `vllm` |
-| `paddle_url` / `paddle_model` / `paddle_prompt` / `paddle_max_tokens` / `paddle_timeout` / `paddle_api_key` / `paddle_ocr_math` | **保留配置**：旧的 PaddleOCR-VL 客户端与配对链路已清空（本次起**不再被读取**）；键与 compose 里的 `PADDLE_OCR_*` 环境变量都保留，供参考/回退 |
+| `unlimited_ocr_url` | Unlimited-OCR 推理服务地址，默认 `http://127.0.0.1:9010/v1`（服务端见仓库根 `unlimited_ocr_service/`） |
+| `unlimited_ocr_model` | 请求用的模型名（要和服务端 served-model-name 对得上），默认 `Unlimited-OCR` |
+| `unlimited_ocr_timeout` | 单页请求超时秒数（默认 600） |
+| `unlimited_ocr_api_key` | 服务端设了 `VLLM_API_KEY` 时才需要，默认空 |
+| `paddle_url` / `paddle_model` / `paddle_prompt` / `paddle_max_tokens` / `paddle_timeout` / `paddle_api_key` / `paddle_ocr_math` | **已删除**：PaddleOCR-VL 的旧客户端与配对链路已随代码移除（本次起**不再被读取、不再被识别**）；键与 compose 里的 `PADDLE_OCR_*` 环境变量保留，仅作历史记录 |
 | `dpi` | 页面渲染分辨率，读取 `config.json` 的 `parser.dpi`（示例值 150）；越大越慢，可按模型对目标 PDF 的识别表现调整 |
 | `image_dpi` | **插图裁剪**的独立渲染分辨率（`parser.image_dpi`，0=与 `dpi` 相同）。只影响插图清晰度：对该页按更高 dpi 重渲一次再裁，OCR 速度与版式坐标不变；建议 300 左右 |
 | `image_labels` | 视为插图的检测类别，默认 `Picture/Figure/Diagram/ChemicalBlock` |
@@ -370,9 +376,10 @@ python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建�
 | `text_in_image_overlap` | 判定“整行落在插图里”的覆盖率阈值，默认 `0.6`(60%) |
 
 环境变量：`PDF_PARSER_BACKEND`、`DETECTION_SERVICE_GROUP_URL`、`DETECTION_SERVICE_GROUP_TIMEOUT`、`DETECTION_SERVICE_GROUP_CONF`、
-`DETECTION_SERVICE_GROUP_ENABLE`、`DETECTION_SERVICE_GROUP_KEEP_CROPS`、`SURYA_INFERENCE_URL`、`SURYA_INFERENCE_BACKEND`、`PDF_PARSER_DPI`、`PDF_PARSER_IMAGE_DPI`、
-`PDF_PARSER_DROP_TEXT_IN_IMAGES`；另保留 `PADDLE_OCR_*`（不再被读取）。
-设置面板会显示**实际生效**的后端、图片/公式检测服务（detection-service-group）与 Surya 的就绪状态。
+`DETECTION_SERVICE_GROUP_ENABLE`、`DETECTION_SERVICE_GROUP_KEEP_CROPS`、`SURYA_INFERENCE_URL`、`SURYA_INFERENCE_BACKEND`、
+`UNLIMITED_OCR_URL`、`UNLIMITED_OCR_MODEL`、`UNLIMITED_OCR_TIMEOUT`、`UNLIMITED_OCR_API_KEY`、`PDF_PARSER_DPI`、`PDF_PARSER_IMAGE_DPI`、
+`PDF_PARSER_DROP_TEXT_IN_IMAGES`；`PADDLE_OCR_*` 已随代码删除（键若保留仅作历史记录，不再被读取）。
+设置面板会显示**实际生效**的后端、图片/公式检测服务（detection-service-group）、Surya 与 Unlimited-OCR 的就绪状态。
 
 优先级是 `parse_pdf(backend=...)` > 环境变量 `PDF_PARSER_BACKEND` > `config.json`，**但环境变量只在
 真的设了非空值时才参与**（空字符串=没设）。Docker 部署下 compose 默认**不再**注入这个变量，所以面板
@@ -384,7 +391,7 @@ python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建�
 - **两条解析链，在「⚙ 设置 → 存储 / OCR」里选**：
   - `auto` / `detection_service_group` / `pymupdf`：**PyMuPDF 文字版式**（精确行框/字号/粗斜体；
     Figure 图片不使用 PyMuPDF 的内嵌位图/矢量图提取）。
-  - `surya`：**Surya 2 整页 OCR**（见下节）。
+  - `surya` / `unlimited_ocr`：**整页 OCR**（Surya 2 与 Unlimited-OCR 各一条**独立**链，见下节）。
 - **图片（PyMuPDF 路线）**：detection-service-group 检测 `Figure` 框，将服务组返回的 `crop` 和 PDF 坐标写入
   `pages[].images`，前端仍通过文档图片接口加载；裁图里已烘焙的文字不会重复叠加。
 - **公式占位（本地）**：公式按**字体名**判出来后
@@ -416,6 +423,35 @@ python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建�
 4. **失败语义**：Surya 不可用（服务没起 / 本机缺 `surya-ocr`）时**直接报错**，
    不会悄悄回退 PyMuPDF —— 免得看起来像解析成功了。状态面板里 `surya_ready` 是
    「服务端 + 客户端都就绪」。
+
+### Unlimited-OCR 后端（`backend=unlimited_ocr`：整页 OCR + 前端独立渲染）
+
+与 Surya 2 那条链**完全独立**（解析模块、排版估算、前端渲染函数与 CSS 类名都不共用，
+一边改动不会牵连另一边）：
+
+1. **客户端**（`backend/unlimited_ocr.py`）：PyMuPDF 把页面渲染成 PNG → 逐页串行调
+   `POST {unlimited_ocr_url}/chat/completions`（vLLM 的 OpenAI 兼容接口；服务端见仓库根
+   `unlimited_ocr_service/`，默认 `http://127.0.0.1:9010/v1`）；回包是模型的 grounding
+   输出（`类型 [x0, y0, x1, y1] 文本`），解析成结构化版面项；`image`/`chart` 项按 bbox
+   从 PDF 页面裁剪落盘。**不需要额外 `pip install`**（只用标准库 + PyMuPDF）。
+   - ⚠️ 坐标是 **0–1000 归一化值**（x、y 各自除以页面宽高再乘 1000），不是渲染图像素
+     —— 换渲染 dpi 不影响坐标，也不影响插图裁剪（从 PDF 按 pt 直接渲矩形）。
+   - ⚠️ 提示词必须以字面量 `<image>` 开头，且请求必须带 `skip_special_tokens=false`
+     与 `vllm_xargs`（缺了输出为空 / 会在 `<|det|>` 上打转）。
+2. **转换**（`backend/pdf_parser/backend_unlimited_ocr.py`，**独立实现**）：归一化
+   坐标 ÷ 1000 × 页面 pt 尺寸 → PDF 点；写进页面 `texts[]`（**块级数据**：`kind` /
+   `utype`（模型原始类型）/ `size` / `line_h` / `text` / `lines[0].runs` / `math` / `html`）。
+   字号由本模块自己的估算器反解：全 PDF 统一正文基准，标题放大、图注/脚注/参考文献
+   小一号；双栏页自动把被挤没的列间空隙修回 ~10pt。公式块是 `kind="formula"` + `latex`
+   （`\[ … \]` 定界符已剥掉），表格块是 `kind="table"` + 原始 `<table>` HTML（另附
+   纯文本供翻译/复制）；插图写进 `pages[].images`（`source="unlimited_ocr"`）。
+3. **渲染**（`frontend/js/reader2.js::buildUnlimitedItem`，`DOC.parser === "unlimited_ocr"`
+   时启用）：块按 bbox 绝对定位、**块内正常流式排版**（`.blk.ul` / `.ul-*` 是独立一套
+   样式，与 Surya 的 `.blk.sy` 各一份）；行内公式用解析侧给的精确字符区间就地渲染 KaTeX，
+   独立公式走 KaTeX 块，表格 HTML 白名单渲染（不参与句子选中）；纵向避让量走独立字段
+   `ulShift`。选句/高亮/笔记/翻译沿用同一套句子机制（`.rn` span + canonical 字符区间）。
+4. **失败语义**：服务不可用（没起 / 超时 / 回包为空）时**直接报错**，不会悄悄回退
+   PyMuPDF。状态面板里 `unlimited_ocr_ready` 是 `GET /models` 真探测结果。
 
 ### 文字数据：一行只有一个 run、一个块只有一句
 
@@ -512,7 +548,7 @@ python tools/mongo_check.py --create-user   # 用 .env 里的 root 账号补建�
 - 用 `detection_service_group_enable=false` 可整体关闭服务组图片/公式检测；这时不再回退到
   PyMuPDF 图片提取。`backend=pymupdf` 也不会显示 Figure 图片。
 - 旧的「整页 OCR → 前后文配对 → 内联进正文」链路（`backend_paddle.py` /
-  `formula_match.py` / `tools/check_formula_match.py`）已**清空为占位壳**；
+  `formula_match.py` / `tools/check_formula_match.py`）**已随代码整体删除**；
   旧码归档在 `history_versions/paddle-ocr-cleared-20261003/`。
 
 ### 解析器升级后：原地重解析（笔记/译文都保留）
@@ -553,7 +589,7 @@ python tools/reparse_layout.py <doc_id> 原PDF.pdf             # 原地重解析
     Surya 时代还有块 HTML `<math>` 对齐回字符区间的行内覆盖层（`inlineMathOf`），
     保留只为兼容旧 doc.json。
 
-> ⚠️ 下面这些是**旧数据兼容路径**（Surya 行内对齐 / Paddle 定界符）踩过的坑，改代码时别踩回去：
+> ⚠️ 下面这些是**旧数据 / 旧渲染路径**（Surya 块行内对齐、早期 OCR 链路）踩过的坑，改代码时别踩回去：
 > ① **公式块不能走行内路径**：公式块的 `html` 就是 `<math display="block">…</math>`（一整块数学），
 > 行内对齐会把它当成“一条行内公式”再渲染一遍 → 行外覆盖层 + 行内覆盖层叠在一起，
 > 就是**行外公式重影**。所以 `item.inlineMath = mb ? null : …`。
@@ -640,8 +676,8 @@ python tools/reparse_layout.py <doc_id> 原PDF.pdf             # 原地重解析
 
 | 解析后端 | 公式来源（解析时抽成 `latex`） |
 | --- | --- |
-| `paddle` | OCR 文本里的 LaTeX：`\(…\)` / `\[…\]` / `$$…$$`，或带 `formula`/`equation` 标签的整块；没有定界符时用 `looks_like_latex()` 保守判定（含 `\frac`/`\sum`/`\int`/`\sqrt`… 等强命令） |
 | `surya` | 公式块标签是 `Equation`（`raw_label` 为 `Equation-Block`），其 `<math>` 里**装的就是 LaTeX 源码**，用 `latex_from_html()` 抽出 |
+| `unlimited_ocr` | 正文里 `\(…\)` / `\[…\]` / `$$…$$`（少见单 `$…$`，保守判据）摘成字符区间；`equation` 块剥掉 `\[ … \]` 定界符 → `latex`；解析侧不猜、不注入 |
 | `pymupdf` | 无数学语义，保持文字 |
 
 > ⚠️ Surya 的 `<math>` **不是 MathML** —— 例如
@@ -717,9 +753,9 @@ curl http://127.0.0.1:9003/health        # status=ok 且 downstream 三个都 ok
 **不需要额外 `pip install`**：检测/识别都在服务组里跑，本进程只渲染/上传页面图、
 把回传的公式框 + LaTeX 记进 doc.json。
 
-> `paddle_ocr_doc_parse_service/` 与 `config.json` 里的 `paddle_*`、compose 里的
-> `PADDLE_OCR_*` 按“保留配置”处理：PaddleOCR-VL 的旧客户端与配对链路已清空，
-> 这些配置/环境变量不再被读取，仅作记录与回退参考。
+> 已删除：PaddleOCR-VL 的旧客户端与配对链路已随代码移除；`config.json` 里的 `paddle_*`
+> 与 compose 里的 `PADDLE_OCR_*` 不再被读取（键若保留仅作历史记录）。
+> `paddle_ocr_doc_parse_service/` 是独立的 OCR 服务，与本应用不再对接。
 
 ### 插图文字重影（去重影）
 
@@ -794,7 +830,8 @@ cd docker && docker compose up -d --build
 
 - 已把 surya 接进同一个 Docker 网络时，可用服务名直连（少绕一跳宿主机）：`SURYA_INFERENCE_URL=http://surya-server:8060/v1`。
 - **detection-service-group 同理**：app 容器默认用 `DETECTION_SERVICE_GROUP_URL=http://host.docker.internal:9003/v1` 连宿主机上的 router_service；接进同一网络则改成 `http://router-service:9003/v1`。它没有本机客户端依赖（只需 PyMuPDF，镜像里已有），`auto`/`detection_service_group` 下图片/公式检测会调它。
-- PaddleOCR-VL 的 `PADDLE_OCR_*` 环境变量**保留**在 compose 里，但对应的客户端已清空、不再被读取（仅作参考）。
+- **Unlimited-OCR 同理**：app 容器默认用 `UNLIMITED_OCR_URL=http://host.docker.internal:9010/v1` 连宿主机上的 `unlimited_ocr_service`（宿主端口 9010）；接进同一网络则改成 `http://<服务名>:9010/v1`。它同样没有本机客户端依赖（只需 PyMuPDF，镜像里已有）。
+- PaddleOCR-VL 的 `PADDLE_OCR_*` 环境变量保留在 compose 里，但对应的客户端与配对链路已随代码删除、不再被读取（键保留仅作历史记录）。
 - 只想要 PyMuPDF 的瘦镜像（不要 torch，约省 1GB）：把 `requirements.txt` 里 torch/torchvision/`surya-ocr` 三行拆到单独的 `requirements-surya.txt`，镜像里只装核心依赖即可。
 - **容器内没有 `config.json`**（`Dockerfile` 只 `COPY config.example.json`），`parser` 段靠上面的环境变量注入；想用文件配置就取消 `docker-compose.yml` 里 `../config.json:/app/config.json:ro` 那行注释（宿主机上该文件必须已存在，否则会被建成同名目录）。
 - 排障入口：网页右上角「⚙ LLM 设置」→「PDF 解析后端」会显示**实际生效**的后端和原因；解析产物 `doc.json` 的 `warnings` 也会写明回退原因。

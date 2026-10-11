@@ -659,7 +659,15 @@ window.R2Math = function (env) {
         box.textContent = "";            // 清掉半成品，退回原样渲染
       }
     }
-    try { window.katex.render(source, box, opts); return true; }
+    try {
+      window.katex.render(source, box, opts);
+      // KaTeX 的 `\tag` 是**绝对定位**（right:0）：调用方必须把盒子拉满块宽，
+      // 编号才会贴在原框右边缘；否则（shrink-to-fit 的盒子里）编号会直接压在
+      // 公式内容上。整页 OCR 后端（Surya 2 / Unlimited-OCR）的模型就可能自带
+      // `\tag{n}` —— 上面 splitTailTag 那条路只认 `\\qquad(1)` 形态，这里兜住。
+      if (display !== false && /\\tag\b/.test(source)) box._hasTag = true;
+      return true;
+    }
     catch (e2) { box.textContent = ""; return false; }
   }
 
@@ -793,10 +801,11 @@ window.R2Math = function (env) {
   }
 
   /* 该文字块用什么渲染？返回 {latex} 或 null(按普通文字渲染)。
-     这是**旧数据**的兼容路径（PaddleOCR/Surya 时代把 LaTeX 挂在块上：Paddle 从 OCR
-     文本里抽、Surya 从 `<math>` 里抽）；新数据里公式是**页面级公式框**
-     （`pg.formula_boxes`，见 buildFormulaBoxes），不走这里。
-     只认「整块就是公式」的块；正文里内联的 `\(…\)` 数学交给 renderInlineMath。 */
+     公式块（`kind="formula"` + `latex`）：整页 OCR 后端（Surya 2 / Unlimited-OCR）的
+     独立公式走这里；早期 OCR 链路（已删除）内联进正文的公式也是同一形状，
+     旧 doc.json 仍能渲染。检测服务组的**页面级公式框**（`pg.formula_boxes`）
+     不走这里，见 buildFormulaBoxes。只认「整块就是公式」的块；正文里内联的
+     `\(…\)` 数学交给 renderInlineMath。 */
   function mathBlockOf(t) {
     if (!t || t.kind !== "formula") return null;
     const latex = typeof t.latex === "string" ? t.latex.trim() : "";

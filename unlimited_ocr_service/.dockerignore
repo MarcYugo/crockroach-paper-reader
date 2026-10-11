@@ -1,0 +1,8 @@
+.env
+.git
+.gitignore
+*.md
+weights/
+# Local weight snapshots are bind-mounted at run time, never copied into the
+# image; without this the build context would be ~7 GB.
+models/
