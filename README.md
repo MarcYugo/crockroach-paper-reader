@@ -19,7 +19,7 @@
 3. [26/10/8] ai辅助阅读增加markdown样式渲染。
 4. [26/10/11] 增加 Unlimited-OCR 解析和渲染路径，调整表格渲染样式为三线表。
    
-   <center><img src="./function_display/table-style.png"></center>
+   <center><img src="./function_display/table-style.png" width=400px></center>
 
 ## Pdf 解析模块
 
