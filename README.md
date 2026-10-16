@@ -112,6 +112,6 @@ LLM 设置预设了OpenAI、Anthoripic、deepseek和本地模式可供选择，�
 - [x] ~~图片显示，子图caption重影缺失等问题~~
 - [ ] pymupdf 本地解析优化
 - [x] ~~unlimited ocr 解析和渲染路径实现~~
-
+- [ ] 引用链接显示功能优化
 
 <!-- https://github.com/MarcYugo/crockroach-paper-reader -->
