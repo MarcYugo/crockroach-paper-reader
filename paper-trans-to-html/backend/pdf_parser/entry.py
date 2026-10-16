@@ -25,7 +25,9 @@
     **不会悄悄回退 PyMuPDF**。
 
 对外签名与返回结构**保持不变**(仍是 `parser` / `parser_info` / `toc` /
-`warnings`)，所以 `converter.py` / `app.py` / `tools/*` 都不用改。
+`warnings`)，所以 `converter.py` / `app.py` / `tools/*` 都不用改；
+每个页面**新增** `pages[].links`（PDF 链接注释，三个后端统一采集，见 `links.py`）
+—— 它是“引用跳转”（正文引用标记 → 参考文献条目，`backend/pdf_refs/refs.py`）的数据源。
 """
 
 from __future__ import annotations
@@ -37,7 +39,9 @@ from .backend_detection_service_group import (apply_formula_boxes)
 from .backend_pymupdf import (_parse_with_pymupdf)
 from .backend_surya import (_parse_with_surya)
 from .backend_unlimited_ocr import (_parse_with_unlimited_ocr)
+from .links import collect_links
 from .options import (load_options)
+from ..pdf_refs.refs_surya import split_surya_reference_blocks
 
 
 # =====================================================================
@@ -93,6 +97,36 @@ def pop_private(result: dict) -> dict:
 
 
 # =====================================================================
+#  链接注释采集（三个后端统一：引用跳转功能的数据源）
+# =====================================================================
+def _attach_links(result: dict, pdf_path: Path, warnings: list[str]) -> None:
+    """把 PDF 链接注释（内部跳转 / URI）写进 `pages[].links`（见 `links.py`）。
+
+    三个解析分支（pymupdf / surya / unlimited_ocr）都在返回前调用 —— 链接来自
+    PDF 注释本身，与“文字来自哪个后端”无关，所以采一套、大家共用。
+    前端“点引用弹参考文献卡片”（`backend/pdf_refs/refs.py` + `frontend/js/r2-refs.js`）
+    与 `GET /api/doc/{id}/refs` 都建立在这份数据上。
+    采集失败只记一条 warning，**绝不影响解析主流程**。
+    """
+    try:
+        links = collect_links(pdf_path)
+    except Exception as exc:                     # 兜底：任何异常都不拖垮解析
+        warnings.append(f"链接注释采集失败：{exc}")
+        links = {}
+    total = 0
+    for pi, pg in enumerate(result.get("pages") or []):
+        got = links.get(pi)
+        if got:
+            pg["links"] = got
+            total += len(got)
+    info = result.get("parser_info")
+    if not isinstance(info, dict):
+        info = {}
+        result["parser_info"] = info
+    info["links_total"] = total
+
+
+# =====================================================================
 #  入口
 # =====================================================================
 def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
@@ -134,6 +168,17 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
                         "Surya 2 整页 OCR 提供；不使用 PyMuPDF 版式，"
                         "也不跑 detection-service-group")
         result = _parse_with_surya(pdf_path, images_dir, opts)
+        split_counts = split_surya_reference_blocks(result.get("pages") or [])
+        if split_counts:
+          info = result.setdefault("parser_info", {})
+          info["surya_blocks"] = sum(
+            len(page.get("texts") or []) + len(page.get("images") or [])
+            for page in result.get("pages") or []
+          )
+          for kind, added in split_counts.items():
+            key = f"surya_kind_{kind}"
+            info[key] = int(info.get(key) or 0) + added
+        _attach_links(result, pdf_path, warnings)
         result["warnings"] = warnings
         return result
 
@@ -145,6 +190,7 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
                         "Unlimited-OCR 整页 OCR 提供；不使用 PyMuPDF 版式，"
                         "也不跑 detection-service-group")
         result = _parse_with_unlimited_ocr(pdf_path, images_dir, opts)
+        _attach_links(result, pdf_path, warnings)
         result["warnings"] = warnings
         return result
 
@@ -171,6 +217,7 @@ def parse_pdf(pdf_path: Path, images_dir: Optional[Path] = None, *,
     # 随代码删除已不再产生，但旧 doc.json 里的这个值前端仍认（兼容）。
     if any(pg.get("formula_boxes") for pg in result.get("pages") or []):
         result["formula_action"] = "boxes"
+    _attach_links(result, pdf_path, warnings)    # 链接注释（引用跳转用，见 links.py）
     pop_private(result)          # `_formula_slots` 只给公式后处理用
     result["warnings"] = warnings
     return result

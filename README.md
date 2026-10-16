@@ -16,10 +16,15 @@
    <img src="./function_display/translate.png" width=400px>
    </center>
 
-3. [26/10/8] ai辅助阅读增加markdown样式渲染。
+3. [26/10/8] ai辅助阅读增加 markdown 样式渲染。
 4. [26/10/11] 增加 Unlimited-OCR 解析和渲染路径，调整表格渲染样式为三线表。
    
-   <center><img src="./function_display/table-style.png" width=400px></center>
+   <center><img src="./function_display/table-style.png"></center>
+
+5. [26/10/16] 为本地pymupdf解析/surya解析/unlimited-ocr解析增加了参考文献链接显示功能，避免查找繁琐。unlimited-ocr解析不稳定（unlimited-ocr在26/10/14更新后好像没有之前好用了）。
+   
+   <center><img src="./function_display/citation2.png"></center>
+   <center><img src="./function_display/citation3.png"></center>
 
 ## Pdf 解析模块
 

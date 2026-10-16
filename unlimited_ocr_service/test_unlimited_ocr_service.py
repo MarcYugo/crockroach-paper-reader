@@ -1,5 +1,5 @@
 """Unlimited-OCR 服务冒烟测试：用 PyMuPDF 打开 PDF，逐页渲染后请求部署好的服务。
-NVIDIA A800-SXM4-40GB
+NVIDIA A800-SXM4-40GB/ NVIDIA A100-SXM4-40GB
 用法:
     python test_unlimited_ocr_service.py paper.pdf
     python test_unlimited_ocr_service.py paper.pdf --base-url http://localhost:9010/v1 --model Unlimited-OCR
@@ -17,8 +17,12 @@ import pymupdf  # PyMuPDF
 from openai import OpenAI
 
 
-def pages_to_base64_png(doc: pymupdf.Document, zoom: float = 2.0):
-    """把 PDF 每一页渲染成 PNG 并 base64 编码。"""
+def pages_to_base64_png(doc: pymupdf.Document, zoom: float = 300 / 72):
+    """把 PDF 每一页渲染成 PNG 并 base64 编码。
+
+    zoom 默认 300/72 ≈ 4.17（300 dpi）：低分辨率下密集页会让模型输出退化
+    （回环重复 / 结尾"1. 2. 3."数数），300 dpi 实测最稳。
+    """
     matrix = pymupdf.Matrix(zoom, zoom)
     return [
         base64.b64encode(page.get_pixmap(matrix=matrix).tobytes("png")).decode()
@@ -94,18 +98,20 @@ def parse_pdf(pdf_path: str, client: OpenAI, model: str, pages=None, raw=False) 
         results = []
         for page_index in selected_pages:
             image = base64.b64encode(
-                doc[page_index].get_pixmap(matrix=pymupdf.Matrix(2.0, 2.0)).tobytes("png")
+                # 300 dpi：低分辨率下密集页会触发模型退化（见 pages_to_base64_png）。
+                doc[page_index].get_pixmap(matrix=pymupdf.Matrix(300 / 72, 300 / 72)).tobytes("png")
             ).decode()
             # Each request contains exactly one page image; process pages sequentially.
             content = [
-                {"type": "text", "text": "<image>document parsing."},
+                # No "<image>" prefix: the chat template adds the placeholder itself.
+                {"type": "text", "text": "document parsing."},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
             ]
             try:
                 response = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": content}],
-                    max_tokens=2048,
+                    max_tokens=6144,
                     temperature=0.0,
                     extra_body={
                         "skip_special_tokens": False,
@@ -177,7 +183,7 @@ def main() -> int:
         return 1
 
     if not result:
-        print("[FAIL] 返回为空：检查提示词是否以 <image> 开头、skip_special_tokens 是否为 False")
+        print("[FAIL] 返回为空：检查文案是否重复带了 <image>（chat_template 会自动加）、skip_special_tokens 是否为 False")
         return 1
 
     output_path = Path(args.output) if args.output else Path(args.pdf).with_suffix(".json")

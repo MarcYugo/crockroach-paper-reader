@@ -508,6 +508,7 @@
         pgObj.items.push({
           kind: "img", el: div, x: im.x * S, y: im.y * S,
           w: im.w * S, h: im.h * S,
+          surya, syShift: surya ? 0 : undefined,
           unlimited, ulShift: unlimited ? 0 : undefined,
         });
       }
@@ -583,6 +584,13 @@
     docId, findItem, itemById, fitItemLines,
     get DOC() { return DOC; },
   });
+
+  /* 引用跳转（PDF 内部链接 → 参考文献卡片，见 r2-refs.js）：
+     数据在 init() 里随其它接口一起拉取（/api/doc/{id}/refs），这里只做装配。
+     模块缺失（浏览器缓存了旧脚本）时给一组空实现，不让阅读器整体挂掉。 */
+  const refsUi = (typeof R2Refs === "function")
+    ? R2Refs({ root: pagesEl })
+    : { set() {}, markAll() {}, markItem() {} };
 
   function buildTextItem(t, S, pageEl, pi) {
     const bx = t.x * S, by = t.y * S;
@@ -763,7 +771,7 @@
       blk.appendChild(box);
       _katexBoxes.add(box);
     } else if (t.kind === "table") {
-      const tb = suryaTableEl(t.html);
+      const tb = suryaTableEl(t.html, size * S);
       const title = suryaTableTitle(t);
       if (title) blk.appendChild(title);
       blk.appendChild(tb || el("div", "ln syln", t.text || ""));
@@ -931,7 +939,7 @@
     if (!label || /<caption\b/i.test(html)) return null;
     return el("div", "sytable-title", label);
   }
-  function suryaTableEl(html) {
+  function suryaTableEl(html, sizePx) {
     const s = String(html || "");
     if (!s || s.indexOf("<table") < 0) return null;
     let doc = null;
@@ -941,6 +949,8 @@
     if (!src) return null;
     const wrap = el("div", "sytable");
     wrap.appendChild(syCleanNode(src));
+    suryaTableMath(wrap, sizePx || 0);   // 单元格里的公式（纯文本 LaTeX）→ KaTeX
+    renderInlineMath(wrap);              // 单元格/caption 里 $…$ / \(…\) 包裹的片段
     return wrap;
   }
   function syCleanNode(node) {
@@ -963,15 +973,64 @@
     return out;
   }
 
+  /* Surya 表格单元格里的公式 → KaTeX。Surya 的表格 HTML 里公式是**纯文本 LaTeX**
+     （`O(n^2 \cdot d)`、`1.4 \cdot 10^{20}`），没有 `<math>` 标签；不渲染的话看到
+     的就是一串反斜杠源码。识别放在 suryaCellLatex（保守：拿不准就不动，渲染失败
+     也保留原文）。只处理「整格都是公式」的单元格 —— 混合自然语言的格子不动
+     （那些格里的 `$…$` / `\(…\)` 片段由 renderInlineMath 那一路处理）。
+     KaTeX 未就绪时整体跳过：加载完成后 render() 会重跑，这里会再走一遍。 */
+  function suryaTableMath(wrap, sizePx) {
+    if (!katexReady()) return;
+    for (const cell of wrap.querySelectorAll("td, th, caption")) {
+      if (cell.querySelector(".katex")) continue;            // 已渲染过（幂等）
+      const tns = [];
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null);
+      let n;
+      while ((n = walker.nextNode())) tns.push(n);
+      if (!tns.length) continue;
+      const latex = suryaCellLatex(tns.map(t => t.nodeValue).join(""));
+      if (!latex) continue;
+      const host = document.createElement("span");
+      host.className = "katex-inline";
+      host.dataset.latex = latex;
+      if (sizePx > 0) host.style.fontSize = mathSizePx(sizePx) + "px";
+      let ok = false;
+      try { ok = katexRender(host, latex, false); } catch (e) { ok = false; }
+      if (!ok) continue;                       // 渲染失败：原文照旧保留
+      cell.textContent = "";
+      cell.appendChild(host);
+    }
+  }
+
+  /* 单元格文本 → LaTeX 源码（识别不出返回空串）。规则：
+       ① 整格被 `$…$` / `\(…\)` / `\[…\]` 包裹 → 取内部；
+       ② 整格含 LaTeX 命令（`\cdot`、`\log`、`\frac`…）→ 整格按 LaTeX 渲染；
+       ③ 整格无空格、含 `^` / `_` 的纯 ASCII 上下标（`n^2`、`d_{model}`）→ 按 LaTeX 渲染。
+     带空格的自然语言、超长文本都不能命中（保持原样）。 */
+  function suryaCellLatex(s) {
+    const t = String(s || "").trim();
+    if (!t || t.length > 200) return "";
+    const m = /^\$([^$]+)\$$/.exec(t)
+           || /^\\\(([\s\S]+)\\\)$/.exec(t)
+           || /^\\\[([\s\S]+)\\\]$/.exec(t);
+    if (m) return m[1].trim();
+    if (/\\[a-zA-Z]{2,}/.test(t)) return t;                 // \cdot / \log / \frac …
+    if (!/\s/.test(t) && /[\^_]/.test(t) && /^[\x20-\x7E]+$/.test(t)) return t;
+    return "";
+  }
+
   /* Surya 块（流式排版）收尾：内容高度要等挂到文档上才量得准 —— 回填
      item.contentH / `.blk` 高度 / 译文卡位置（relayout 的避让都按 contentH 算）。
      **只放大不缩小**：文本量比原框多时按实际高度长出去（解析侧已按块框做过
-     缩字适配，溢出很小）。公式/表格块不走这里（高度由各自机制管）。 */
+     缩字适配，溢出很小）。公式块的高度由 finalizeDisplayMath 收尾（这里跳过）；
+     表格（及 HTML 解析失败时的纯文本兜底）按**实际渲染高度**回填 —— Surya 的
+     检测框高常小于表格真实高度（字体/内距差异），不回填的话下面的文字会按
+     变矮的框算避让、压到表格上（见 settleSuryaVertical）。 */
   function finalizeSuryaBlocks() {
     for (const id in itemById) {
       const it = itemById[id];
-      if (!it.surya || it.kind !== "blk" || !it.linesData.length) continue;
-      if (it.syHeading) {
+      if (!it.surya || it.kind !== "blk") continue;
+      if (it.syHeading && it.linesData.length) {
         // 标题不折行：量内容自然宽度，需要时把块放宽（最多到原框的 2.4 倍，长标题
         // 顶多折一行）。⚠️ CSS 的 `min(max-content, X)` 不合法（关键词不能进 min()），
         // 只能挂载后量。窄框标题（居中的 "Abstract" 之类）折行会压到下面正文上。
@@ -987,6 +1046,22 @@
       }
       let h = 0;
       for (const ld of it.linesData) h = Math.max(h, ld.el.offsetHeight + (ld.dy || 0));
+      if (!it.linesData.length) {
+        // 没有流式行的块 = 表格（含 HTML 解析失败的纯文本兜底）或公式 —— 按块内
+        // **流内容**（`.sytable-title` + `.sytable`，含外边距）的实际总高量取；
+        // 公式盒是绝对定位、卡片容器（.exp）也不占流，全被跳过 → 量不到就跳过
+        // 整块（公式高度归 finalizeDisplayMath 管，别覆盖它算好的高度）。
+        let found = false;
+        for (const ch of it.el.children) {
+          if (ch.classList.contains("exp")) continue;      // 卡片容器（绝对定位）
+          const cs = getComputedStyle(ch);
+          if (cs.position === "absolute") continue;        // 公式盒等不占流
+          h += (parseFloat(cs.marginTop) || 0) + ch.offsetHeight
+             + (parseFloat(cs.marginBottom) || 0);
+          found = true;
+        }
+        if (!found) continue;
+      }
       h = Math.max(h, it.h);
       it.contentH = h;
       it.el.style.height = h + "px";
@@ -994,11 +1069,12 @@
     }
   }
 
-  /* Surya 块的**纵向避让**：检测框纵向膨胀 + 行内 KaTeX 撑高行盒，实测内容
-     常常比块框高 —— “文本满框”时上一块的文字会与下一块叠在一起。这里在
-     finalizeSuryaBlocks 量完真实高度后，按「同栏、y 升序」逐块算一个**只下移**
-     的位移量 `it.syShift`：本块顶不得高于同栏任一已排块的内容底 + SY_VGAP。
-     同栏 = x 区间重叠 ≥ 两者较窄宽的一半（双栏左右栏互不影响；跨栏块是
+  /* Surya 块与图片的**纵向避让**：检测框纵向膨胀 + 行内 KaTeX 撑高行盒 + 表格按真实
+     内容渲染（高度常超检测框），实测内容经常比块框高 —— “文本满框”时上一块的文字
+     会与下一块（尤其是表格）叠在一起。这里在 finalizeSuryaBlocks 量完真实高度后，
+     按「同栏、y 升序」逐块算一个**只下移**的位移量 `it.syShift`：本块顶不得高于同栏
+     任一已排元素的内容底 + SY_VGAP（表格与图片也参与：图片压到文字/表格上的情况同样
+     要躲开）。同栏 = x 区间重叠 ≥ 两者较窄宽的一半（双栏左右栏互不影响；跨栏块是
      下方两栏共同的前邻）；级联自然收敛 —— 按 y 序处理，前块用的都是避让后的底。
      ⚠️ 位移量每轮都**基于原始 it.y 重算**（且不写回数据）：缩放/窗口变化会
      整页重建，每次都以原始几何为基准，不会累积漂移；应用交给 relayoutPage
@@ -1006,28 +1082,24 @@
      笔记卡位置因此都自动跟随）。 */
   const SY_VGAP = 2;      // px：避让后相邻块内容之间至少保留的空隙
   function settleSuryaVertical() {
-    const byPage = new Map();
-    for (const id in itemById) {
-      const it = itemById[id];
-      if (!it.surya || it.kind !== "blk") continue;
-      if (it.el.classList.contains("sy-vertical")) continue;   // 竖排条带不参与
-      let arr = byPage.get(it.pi);
-      if (!arr) byPage.set(it.pi, arr = []);
-      arr.push(it);
-    }
-    for (const list of byPage.values()) {
+    for (const page of pages) {
+      const list = page.items.filter(it =>
+        it.surya && !(it.kind === "blk" && it.el.classList.contains("sy-vertical")));
       list.sort((a, b) => (a.y - b.y) || (a.x - b.x));
-      const settled = [];           // [{x, w, bottom}]：已排块（bottom 含避让量）
+      const settled = [];           // [{x, w, bottom}]：已排元素（bottom 含避让量）
       for (const it of list) {
         let need = -Infinity;
+        const width = it.kind === "blk" ? Math.max(it.w, it.el.offsetWidth) : it.w;
         for (const s of settled) {
-          const ov = Math.min(s.x + s.w, it.x + it.w) - Math.max(s.x, it.x);
-          if (ov < Math.min(s.w, it.w) * 0.5) continue;        // 不同栏
+          const ov = Math.min(s.x + s.w, it.x + width) - Math.max(s.x, it.x);
+          if (ov < Math.min(s.w, width) * 0.5) continue;       // 不同栏
           need = Math.max(need, s.bottom + SY_VGAP);
         }
         it.syShift = Math.max(0, need - it.y);      // 只下移，绝不上移
-        settled.push({ x: it.x, w: it.w,
-                       bottom: it.y + it.syShift + it.el.offsetHeight });
+        const height = it.kind === "blk" ? Math.max(it.contentH || 0, it.el.offsetHeight)
+                                         : it.h;
+        settled.push({ x: it.x, w: width,
+                       bottom: it.y + it.syShift + height });
       }
     }
   }
@@ -1555,6 +1627,7 @@
     // 行宽适配放最后：此时行内已经是 KaTeX 成品（不是 `\(…\)` 源码），量出来的才准。
     // 公式覆盖层是绝对定位的，不占行宽，所以这一步之后行宽不会再变。
     fitItemLines(item);
+    refsUi.markItem(item);     // 引用跳转：按块 id + 字符区间重打 .cite 标记（幂等）
   }
 
   /* ================= 选中句子 ================= */
@@ -2418,12 +2491,12 @@
       it.expH = it.exp.offsetHeight;
       it.expW = Math.max(it.w, inlineNotes ? it.nbox.offsetWidth : 0);
     }
-    // ⓪ Surya 块的内容避让（settleSuryaVertical 精确计算）：直接改 style.top，
+    // ⓪ Surya 内容和图片的避让（settleSuryaVertical 精确计算）：直接改 style.top，
     //    与卡片顶开（transform）互不干扰，幂等（同一布局内 syShift 不变）。
     //    ⚠️ 不走 ①/② 的位移链：那条链是给卡片设计的近似“同化”传播，会把
     //    精确的避让量再放大，反而让下方块被多推、造成新的重叠（第 2 页实测）。
     for (const it of items) {
-      if (it.kind !== "blk" || it.syShift === undefined) continue;
+      if (!it.surya || it.syShift === undefined) continue;
       it.el.style.top = (it.y + it.syShift).toFixed(1) + "px";
     }
     // ⓪-b Unlimited-OCR 内容和图片的避让（settleUnlimitedVertical 精确计算）：
@@ -2687,11 +2760,15 @@
     await loadPrefs();             // 自定义高亮色 / 显示译文开关：随账号存在服务端
     renderHmenuSwatches();
     try {
-      [META, DOC, anno] = await Promise.all([
+      let refsData = null;
+      [META, DOC, anno, refsData] = await Promise.all([
         api("/api/doc/" + docId + "/progress"),
         api("/api/doc/" + docId),
         api("/api/doc/" + docId + "/anno"),
+        // 引用跳转数据（PDF 内部链接 → 参考文献条目）：旧数据/无链接时为空映射，静默
+        api("/api/doc/" + docId + "/refs").catch(() => null),
       ]);
+      refsUi.set(refsData);
       perm = META.perm || "owner";
       docOwner = META.owner || "";
       myName = ((await authStatus()) || {}).username || "";   // 笔记作者标识用
@@ -2731,6 +2808,13 @@
                  pr.detection_service_group_ready === false) {
         tips.push("⚠️ detection-service-group 不可用：解析时会跳过 Figure 图片和公式框/LaTeX 增强。" +
           (pr.message || "") + "（点右上角「⚙ 设置 → 存储 / OCR」查看）");
+      }
+      // 旧解析数据没有链接注释时，编号引用已尝试回退匹配；仍无映射才提示可重解析。
+      if (refsData && refsData.scan === "no-links-data"
+          && refsData.section_page !== null
+          && !(refsData.links || []).length
+          && ((refsData.counts || {}).entries || 0) > 0) {
+        tips.push("📎 这篇论文的版式数据还没有采集引用链接（旧版数据）：在顶栏点「🔄 重解析」选择同一份 PDF 后，可尝试启用正文引用跳转。");
       }
       showNotice(tips.join("　"), !!tips.length);
       // 公式用 KaTeX 渲染：脚本懒加载，先画一次(公式先按 PDF 原文字显示)，

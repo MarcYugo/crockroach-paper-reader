@@ -32,6 +32,7 @@ services:
       VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.80}
       VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: ${VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS:-0}
       VLLM_LIMIT_MM_PER_PROMPT: "${VLLM_LIMIT_MM_PER_PROMPT:-{\"image\": 16}}"
+      VLLM_HF_OVERRIDES: "${VLLM_HF_OVERRIDES:-{\"model_type\": \"unlimited-ocr\"}}"
       # vLLM only enforces the key when it is non-empty.
       VLLM_API_KEY: ${VLLM_API_KEY:-}
 

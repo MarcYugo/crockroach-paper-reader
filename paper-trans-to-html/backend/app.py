@@ -25,6 +25,7 @@ from . import auth as auth_mod
 from . import converter
 from . import pdf_parser
 from . import records
+from . import pdf_refs as refs_mod
 from .ai_read import (article_text, build_summary, clean_notes, clean_summary,
                       notes_fingerprint, reply_chat_stream, summary_empty)
 from .db import StorageUnavailable, mongo
@@ -700,6 +701,22 @@ def api_doc(request: Request, doc_id: str):
         return store.read_doc(doc_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, "文档数据缺失") from exc
+
+
+@app.get("/api/doc/{doc_id}/refs")
+def api_doc_refs(request: Request, doc_id: str):
+    """引用跳转：PDF 内部链接（正文引用标记 → 参考文献条目）算好的映射。
+
+    纯本地、零 LLM 成本（毫秒级），所以**不缓存、每次现算** —— 重解析后自然就是
+    新数据；PDF 本身没有内部链接（绝大多数扫描件）时返回空映射，前端静默。
+    数据结构见 `backend/pdf_refs/refs.py`。
+    """
+    _doc_access(request, doc_id)
+    try:
+        doc = store.read_doc(doc_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "文档数据缺失") from exc
+    return refs_mod.build_refs(doc)
 
 
 _IMG_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",

@@ -318,7 +318,10 @@ a { color: var(--accent); text-decoration: none; }
 /* 图注/脚注/页眉页脚淡化：颜色在 .rn 上是内联的（styleRun），只能用整体透明度 */
 .blk.sy.sy-footnote { opacity: .8; }
 .blk.sy.sy-header, .blk.sy.sy-footer { opacity: .55; }
-/* 表格：白名单渲染的 Surya <table>（描边是阅读器补的，Surya 数据里只有结构） */
+/* 表格：白名单渲染的 Surya <table>，描边（三线表）是阅读器补的 —— Surya 数据里只有结构。
+   与 unlimited-ocr 的口径一致：顶线/底线 + 表头下线，其余无线。模型回包通常只有
+   td，没有 thead/th，因此兼容以 colspan/rowspan 标记的两行表头；普通单行表头
+   则用首行作为表头分隔线。 */
 .blk.sy .sytable {
   width: 100%;
   max-width: 100%;
@@ -341,11 +344,33 @@ a { color: var(--accent); text-decoration: none; }
   line-height: 1.4;
   text-align: right;
 }
-.blk.sy .sytable table { border-collapse: collapse; width: 100%; }
-.blk.sy .sytable td, .blk.sy .sytable th {
-  border: 1px solid var(--line); padding: 2px 5px; vertical-align: top;
+.blk.sy .sytable table {
+  border-collapse: collapse;
+  width: 100%;
+  border-top: 1.5px solid var(--mut);
+  border-bottom: 1.5px solid var(--mut);
+  font-family: "Times New Roman", Times, "Noto Serif", SimSun, serif;
 }
-.blk.sy .sytable th { font-weight: 700; background: var(--bg-soft); }
+.blk.sy .sytable td, .blk.sy .sytable th {
+  border: 0;
+  padding: 3px 6px;
+  vertical-align: top;
+}
+.blk.sy .sytable thead tr:last-child > td,
+.blk.sy .sytable thead tr:last-child > th {
+  border-bottom: 1px solid var(--mut);
+}
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child:not(:has([colspan], [rowspan])) > td,
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child:not(:has([colspan], [rowspan])) > th,
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr > td,
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr > th {
+  border-bottom: 1px solid var(--mut);
+}
+.blk.sy .sytable thead,
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child,
+.blk.sy .sytable table:not(:has(> thead)) > tbody > tr:first-child:has([colspan], [rowspan]) + tr {
+  font-weight: 700;
+}
 /* 行内公式（suryaInlineMath 就地渲染的 KaTeX）：**绝不换行** —— 公式内部（y = 0、
    \frac…）允许折行的话，一个公式会被拆到三行上去（KaTeX 的 HTML 里本来就有可断点）；
    `.blk .ln .katex *` 那条为了 `\(…\)` 情境恢复的 normal 在这里要被压掉。 */
@@ -1309,3 +1334,68 @@ html.dark .ai-empty .big { filter: saturate(.9); }
   box-shadow: var(--shadow); display: flex; align-items: center; justify-content: center;
 }
 .theme-fab:hover { border-color: var(--accent); }
+
+/* ============================================================
+   引用跳转（r2-refs.js）：正文里的 .cite 引用标记 + 参考文献弹层
+   ────────────────────────────────────────────────────────────
+   标记：`.cite` 包在句子 span 内，**不能加 padding/边框**（会改行宽，干扰
+   fitLineEl 的按行框适配），只上底色与字色；亮暗两套都走变量。
+   弹层：单例 .refpop（fixed 定位），条目列表 + 操作行。
+   闪烁：.blk.ref-flash 由「定位原文」触发，1.7s 后由 JS 摘掉类。
+   ============================================================ */
+.cite {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cite:hover { background: var(--accent); color: #fff; }
+html.dark .cite:hover { color: #10141a; }
+.blk.ref-flash { animation: refFlash 1.7s ease-out 1; }
+@keyframes refFlash {
+  0%, 55% { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent-soft); }
+  100% { background: transparent; box-shadow: none; }
+}
+.refpop {
+  position: fixed; z-index: 75;
+  width: min(440px, 92vw);
+  max-height: min(54vh, 520px);
+  overflow: auto;
+  background: var(--card); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-size: 13.5px; line-height: 1.55;
+}
+.refpop .rp-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px; color: var(--mut);
+}
+.refpop .rp-head b { color: var(--ink); }
+.refpop .rp-nums { color: var(--accent); font-weight: 600; }
+.refpop .rp-x {
+  margin-left: auto; border: 0; background: transparent; color: var(--mut);
+  cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 6px;
+}
+.refpop .rp-x:hover { background: var(--bg-chip); color: var(--ink); }
+.refpop .rp-list { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 9px; }
+.refpop .rp-item { display: flex; gap: 8px; align-items: flex-start; }
+.refpop .rp-badge {
+  flex: none; min-width: 34px; text-align: center;
+  padding: 1px 4px; margin-top: 1px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent);
+  font-weight: 600; font-size: 12px;
+}
+.refpop .rp-main { min-width: 0; flex: 1; }
+.refpop .rp-text { font-size: 12.5px; user-select: text; white-space: normal; overflow-wrap: anywhere; }
+.refpop .rp-acts { margin-top: 4px; display: flex; gap: 10px; }
+.refpop .rp-acts button,
+.refpop .rp-acts a {
+  border: 0; background: transparent; padding: 0;
+  color: var(--accent); font-size: 12px; cursor: pointer;
+}
+.refpop .rp-acts button:hover,
+.refpop .rp-acts a:hover { text-decoration: underline; }

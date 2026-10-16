@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PENDING</title>
+<link rel="stylesheet" href="css/style.css">
+<script>
+/* 只认 SyntaxError（reader2.js 在本页会因缺 DOM 元素中途 TypeError，那不算语法问题） */
+window.__synErrs = [];
+window.addEventListener("error", function (e) {
+  var err = e.error;
+  if (err && err.name === "SyntaxError") {
+    window.__synErrs.push((e.filename || "?") + " " + err.message);
+  }
+});
+</script>
+</head>
+<body>
+<!-- 假装的正文：一个块两句，里面有 [1] / [2] -->
+<div class="pages" id="pages">
+  <div class="page" style="position:relative;width:600px;height:200px">
+    <div class="blk" data-id="p0b1" style="position:absolute;left:20px;top:20px;width:540px;height:40px">
+      <div class="ln" style="position:relative">
+        <span class="rn" data-g="0">Intro cites </span><span class="rn" data-g="12">[1]</span><span class="rn" data-g="15"> and </span><span class="rn" data-g="20">[2]</span><span class="rn" data-g="23"> here.</span>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="notice" hidden></div>
+<pre id="log" style="font-size:12px"></pre>
+
+<script src="js/common.js"></script>
+<script src="js/r2-md.js"></script>
+<script src="js/r2-nav.js"></script>
+<script src="js/r2-math.js"></script>
+<script src="js/r2-notes.js"></script>
+<script src="js/r2-ai.js"></script>
+<script src="js/r2-refs.js"></script>
+
+<script>
+/* 功能自检（在 reader2.js 之前跑：避免两个实例同时监听 #pages 时互相抢事件） */
+(function () {
+  var log = [];
+  function ok(name, cond) { log.push((cond ? "ok   " : "FAIL ") + name); }
+  try {
+    var ui = R2Refs({ root: document.getElementById("pages") });
+    ui.set({
+      ok: true,
+      entries: [
+        { i: 0, n: 1, text: "[1] J. Smith. Test paper. 2019." },
+        { i: 1, n: 2, text: "[2] A. Doe. Another. 2020.", uri: "https://example.com/x" }
+      ],
+      links: [
+        { page: 0, block: "p0b1", start: 12, end: 15, token: "[1]", refs: [0], nums: [1] },
+        { page: 0, block: "p0b1", start: 20, end: 23, token: "[2]", refs: [1], nums: [2] },
+        { page: 0, block: "p0b1", start: 99, end: 102, token: "[9]", refs: [0], nums: [9] }
+      ]
+    });
+    ui.markAll();
+    var chips = document.querySelectorAll("#pages .cite");
+    ok("chip 数量=2（越界锚点被跳过）", chips.length === 2);
+    ok("chip[0] 文本 [1]", !!chips[0] && chips[0].textContent === "[1]");
+    ok("chip[1] refs=1", !!chips[1] && chips[1].dataset.refs === "1");
+
+    ui.markItem({ id: "p0b1", el: document.querySelector('.blk[data-id="p0b1"]') });
+    ok("重复标记幂等", document.querySelectorAll("#pages .cite").length === 2);
+
+    // ⚠️ 幂等重打会把旧 chip 换掉（clearBlock 后重建）→ 点击前必须重新查询
+    document.querySelector("#pages .cite").dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }));
+    var pop = document.querySelector(".refpop");
+    ok("点击后弹卡显示", !!pop && !pop.hidden);
+    ok("卡片含条目原文", !!pop && /J\. Smith/.test(pop.textContent));
+    ok("卡片含操作按钮", !!pop && /定位原文/.test(pop.textContent) && /复制/.test(pop.textContent));
+
+    document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    ok("点空白关闭", !!pop && pop.hidden);
+
+    var jb = pop.querySelector("[data-jump]");
+    ok("定位按钮带锚点", !!jb && jb.dataset.jump === "0");
+
+    // ✕ 关闭按钮（用户反馈过“点了没反应”：onPopClick 里要接 .rp-x 分支）
+    document.querySelector("#pages .cite").dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }));
+    var reopened = !pop.hidden;
+    pop.querySelector(".rp-x").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    ok("✕ 按钮能关闭卡片", reopened && pop.hidden);
+  } catch (e) {
+    log.push("EXC " + (e && e.message));
+  }
+  window.__refsLog = log.join("\n");
+  var pre = document.getElementById("log");
+  if (pre) pre.textContent = window.__refsLog;
+})();
+</script>
+<script src="js/reader2.js"></script>
+<script>
+/* 汇总：REFS-OK/BAD（模块功能）+ SYN-OK/ERR（reader2.js 语法） */
+(function () {
+  var refsOk = !!window.__refsLog && window.__refsLog.indexOf("FAIL") < 0
+               && window.__refsLog.indexOf("EXC") < 0;
+  var synOk = !(window.__synErrs && window.__synErrs.length);
+  document.title = "REFS-" + (refsOk ? "OK" : "BAD") + " SYN-" + (synOk ? "OK" : "ERR");
+  var pre = document.getElementById("log");
+  if (pre) pre.textContent = (window.__refsLog || "") + "\n---\n" + document.title +
+    (synOk ? "" : "\n" + window.__synErrs.join("\n"));
+})();
+</script>
+</body>
+</html>

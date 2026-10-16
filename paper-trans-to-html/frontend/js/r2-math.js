@@ -75,6 +75,9 @@ window.R2Math = function (env) {
         if (t.latex) return true;                         // 公式块（含 Surya kind="formula"）
         if (t.math && t.math.length) return true;         // Surya 块：解析侧标好的行内区间
         if (t.html && t.html.indexOf("<math") >= 0) return true;   // Surya 表格里的 <math>
+        // Surya 表格：单元格里的公式是**纯文本 LaTeX**（`O(n^2 \cdot d)`），没有 <math>
+        // 标签 —— 检测反斜杠命令以便把 KaTeX 加载起来（误报只是多加载一次，无副作用）。
+        if (t.html && t.html.indexOf("<table") >= 0 && /\\[a-zA-Z]{2,}/.test(t.html)) return true;
         if (MATH_DELIM_RE.test(t.text || "")) return true;
       }
     }

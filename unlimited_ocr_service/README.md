@@ -83,9 +83,10 @@ response = client.chat.completions.create(
         {
             "role": "user",
             "content": [
-                # The literal "<image>" prefix is required; without it the model
-                # returns nothing.
-                {"type": "text", "text": "<image>document parsing."},
+                # Do NOT include a literal "<image>" here: the checkpoint's chat
+                # template already emits one "<image>" placeholder per image item,
+                # and a duplicate prefix makes the model return an empty response.
+                {"type": "text", "text": "document parsing."},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
             ],
         }
@@ -135,15 +136,31 @@ Everything is read from the environment; see [.env.example](./.env.example).
 | `VLLM_MAX_MODEL_LEN` | `8192` | Context budget for input (including page images) and generated output. Keep it above `max_tokens` plus the input size. Increase it for larger PDFs if GPU memory allows. |
 | `VLLM_GPU_MEMORY_UTILIZATION` | `0.90` | Lower it if other processes share the GPU. |
 | `VLLM_LIMIT_MM_PER_PROMPT` | `{"image": 16}` | Maximum page images in one prompt. Increase it for PDFs with more pages; lower it if the GPU runs out of memory. |
+| `VLLM_HF_OVERRIDES` | `{"model_type": "unlimited-ocr"}` | Routes config parsing to vLLM's native config class so the checkpoint's v4-era remote code is not executed under Transformers v5. Set to `{}` to disable. |
 | `VLLM_API_KEY` | unset | vLLM enforces it only when non-empty. |
 
 ## Troubleshooting
 
-* **Empty responses** — the prompt text must start with a literal `<image>`, and
-  `skip_special_tokens` must be `False`.
+* **Empty responses** — the request text must NOT repeat the `<image>` prefix: the
+  checkpoint's chat template already emits one `<image>` placeholder per image item,
+  and a duplicated placeholder makes the model stop immediately (empty response).
+  Also keep `skip_special_tokens` as `False`.
+* **Decoded text shows literal `Ġ` / `Ċ` characters, or words glued together** —
+  the checkpoint's `tokenizer_class` (`LlamaTokenizerFast` + `"legacy": true`) mangles
+  its byte-level BPE vocab under Transformers v5. The entrypoint stages a patched
+  `PreTrainedTokenizerFast` copy under `/tmp/ocr-tokenizer` and serves with
+  `--tokenizer` pointing there; check that flag in the startup log if this reappears.
+* **Runaway counting ("1. 2. 3. …") or loops on dense pages** — the page was
+  rendered too small. Dense pages need ≥200 dpi (300 recommended; the PDF example
+  above uses `dpi=300`); at 150 dpi the model cannot read the page and degenerates.
 * **Output loops on `<|det|>` tokens** — the request is missing
   `vllm_xargs`, or the server was started without `--logits-processors` (which
   the entrypoint always adds).
+* **`is_torch_fx_available` / `Support for Transformers v4` errors** — the
+  checkpoint's remote code targets Transformers v4, while the vLLM build in the
+  base image requires v5. The entrypoint therefore serves with
+  `--hf-overrides` (vLLM's native `unlimited-ocr` config) instead of
+  `--trust-remote-code`; do not add that flag back.
 * **`At most 1 image(s) may be provided in one prompt`** — the configured
   `VLLM_LIMIT_MM_PER_PROMPT` is too low for the PDF. Set its `image` limit to
   at least the number of pages being sent, then recreate the service.
@@ -151,7 +168,8 @@ Everything is read from the environment; see [.env.example](./.env.example).
   the weights load; check `docker compose logs -f`.
 * **`Cannot find model` / empty `/weights`** — `LOCAL_WEIGHTS_DIR` does not
   exist on the host, so Docker creates an empty root-owned directory and mounts
-  that. Download the snapshot first.* **Out of shared memory / NCCL errors** — keep `ipc: host`, or give the service
+  that. Download the snapshot first.
+* **Out of shared memory / NCCL errors** — keep `ipc: host`, or give the service
   a large `shm_size`.
 
 ## Extra `vllm serve` flags

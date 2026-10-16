@@ -12,6 +12,15 @@
 ARG BASE_IMAGE=vllm/vllm-openai:unlimited-ocr-cu129
 FROM ${BASE_IMAGE}
 
+# `addict`/`matplotlib` are imported by the checkpoint's remote-code files.
+# The default launch path never executes them (config parsing is routed to
+# vLLM's native `unlimited-ocr` class in the entrypoint), but they are small
+# and keep those files a step closer to importable. Do NOT pin Transformers
+# here: the vLLM build in this image requires Transformers v5, while the
+# checkpoint's remote code targets v4.
+RUN uv pip install --system addict matplotlib \
+    && python3 -c "import addict, matplotlib"
+
 # Optional: adds the ModelScope Hub client (enable with INSTALL_MODELSCOPE=true).
 # Only needed to fetch weights from ModelScope
 # (`VLLM_USE_MODELSCOPE=1`) instead of Hugging Face. The dependency-free install

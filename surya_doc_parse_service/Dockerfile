@@ -63,6 +63,8 @@ ARG ENABLE_CUDA=0
 ARG CUDA_ARCHITECTURES=75;80;86;89
 # surya-ocr 版本(Surya 2)
 ARG SURYA_VERSION=0.22.1
+# PyTorch CPU wheels (the later Surya install uses the regular PyPI index)
+ARG TORCH_PIP_INDEX_URL=https://download.pytorch.org/whl/cpu
 # pip 源(国内可换镜像)
 ARG PIP_INDEX_URL=https://pypi.org/simple
 
@@ -108,7 +110,7 @@ RUN set -eux; \
 RUN python3 -m venv /opt/venv \
  && /opt/venv/bin/python -m pip install --no-cache-dir -U pip setuptools wheel \
  && /opt/venv/bin/python -m pip install --no-cache-dir \
-      # --index-url https://download.pytorch.org/whl/cpu \
+      --index-url ${TORCH_PIP_INDEX_URL} \
       torch torchvision \
  && (/opt/venv/bin/python -m pip freeze | grep -iE '^(torch|torchvision|torchaudio)' \
        > /tmp/torch-constraints.txt || true) \
